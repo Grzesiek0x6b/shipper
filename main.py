@@ -1,18 +1,11 @@
 from abc import ABC, abstractmethod
 from bisect import insort_left
 from collections import defaultdict
-from dataclasses import dataclass, field
-from functools import partial, reduce
-from itertools import accumulate, chain, combinations, combinations_with_replacement, count, groupby, islice, permutations, product
+from functools import partial
+from itertools import chain, combinations
 import math
-from multiprocessing import Pool, Queue, Value, active_children
-from operator import mul
-import os
-from pprint import pprint
 from queue import Empty
-from random import randint, random, sample
-from threading import Thread
-from typing import List, Dict, Tuple, Any
+from random import random
 
 import pygame
 from mst import Graph
@@ -272,7 +265,7 @@ class App:
         self.uimanager = ui.Manager(screen_size=self.screen_size)
         self.thread = None
         self.progress = None
-        self.solutions_queue = Queue()
+        self.solutions_queue = None
         self.warps_count = 0
         self.warps_lines = []
         self.assigment_lines = defaultdict(list)
@@ -580,10 +573,8 @@ class App:
         
         def menu_btn_update():
             orig_menu_btn_update()
-            # if self.progress:
-            #     print(self.progress._level0)
-            #     print(self.progress._level1)
-            #     print(self.progress._level2)
+            if self.solutions_queue is None:
+                return
             while True:
                 try:
                     solution = self.solutions_queue.get_nowait()
@@ -679,7 +670,7 @@ def main():
         uimanager.update()
         uimanager.render(screen)
         pygame.display.flip()
-        clock.tick(50)
+        clock.tick(100)
     pygame.display.quit()
 
 

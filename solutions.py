@@ -1,9 +1,8 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
-from functools import reduce
-from itertools import chain, combinations, groupby, islice, product
+from itertools import combinations, groupby, islice, product
 import math
-from multiprocessing import Manager, Pool, Process, Value, current_process
+from multiprocessing import Manager, Pool
 from queue import Empty
 from random import sample
 from threading import Thread
@@ -60,7 +59,6 @@ class Env:
 
 @dataclass
 class ConsumerArgs:
-    env: Env
     ts_sectors: List[SectorAlias]
     warps: List[SectorAlias]
 
@@ -88,20 +86,17 @@ class Counter:
 
 def compute(env):
     m = Manager()
-    inqueue = m.Queue(1000000)
-    outqueue = m.Queue(1000000)
+    inqueue = m.Queue(100000)
+    outqueue = m.Queue(100000)
     progress = [Progress(m) for _ in range(PROCESSES)]
-    
-    def run_producer():
-        producer(inqueue, env)
 
     def run_consumers():
         with Pool(processes=PROCESSES) as pool:
-            pool.map_async(consumer, ((inqueue, outqueue, Counter(PROCESSES, i), p) for i, p in enumerate(progress))).get()
+            pool.map_async(consumer, ((inqueue, outqueue, env, Counter(PROCESSES, i), p) for i, p in enumerate(progress))).get()
         pool.close()
         pool.join()
 
-    pthread = Thread(target=run_producer)
+    pthread = Thread(target=producer, args=(inqueue, env))
     pthread.daemon = True
     pthread.start()
 
@@ -129,7 +124,7 @@ def warps_selection(sectors, count):
     for _, g in groups:
         g = list(g)
         for cw in g:
-            yield cw[0]
+            yield tuple(cw[0])
         return
         
 def producer(inqueue, env):
@@ -137,48 +132,46 @@ def producer(inqueue, env):
         sectors = env.colonized_sectors + list(ts_sectors)
         warps_count = min(len(sectors)-1, env.warps_count)
         for warps in warps_selection(sectors, warps_count):
-            inqueue.put(ConsumerArgs(env, ts_sectors, warps))
+            inqueue.put(ConsumerArgs(ts_sectors, warps))
     inqueue.put(StopIteration())
 
 
 def consumer(args):
-    inqueue, outqueue, counter, progress = args
+    inqueue, outqueue, env, counter, progress = args
     while True:
         try:
             arg = inqueue.get(True, 1)
             if isinstance(arg, StopIteration):
                 inqueue.put(arg)
                 break
-            neighbourhood = dict(find_neighbours(arg.env.sectors, arg.warps))
-            for assignment in sample_assigments(arg, neighbourhood, progress):
-                capacities_left = arg.env.capacities.copy()
+            neighbourhood = dict(find_neighbours(env.sectors, arg.warps))
+            for assignment in sample_assigments(env, neighbourhood, progress):
+                capacities_left = env.capacities.copy()
                 for i, j in enumerate(assignment):
-                    capacities_left[j] -= arg.env.targets[i]
+                    capacities_left[j] -= env.targets[i]
                 if all(r > 0.3 for r in capacities_left):
                     score1 = 1
                     for i, r in enumerate(capacities_left):
-                        if all(secalias not in arg.warps for secalias in arg.env.sectors if i in secalias.content):
-                            score1 *= r/arg.env.targets[i] if math.isclose(r, 1, rel_tol=0.5) else 0.5
+                        if find_sector(env.sectors, i) not in arg.warps:
+                            score1 *= r/env.targets[i] if math.isclose(r, 1, rel_tol=0.05) else 0.5
                         else:
-                            score1 *= r/arg.env.targets[i]
+                            score1 *= r/env.targets[i]
                     score2 = 1
                     score3 = 1
                     score4 = 1
-                    for i, j in enumerate(assignment):
-                        sec1 = min(secalias for secalias in arg.env.sectors if i in secalias.content)
-                        sec2 = min(secalias for secalias in arg.env.sectors if j in secalias.content)
-                        for k, warped in neighbourhood[i]:
-                            if k == j:
-                                d = max(1, sec1.distance(sec2)/(arg.env.sector_radius*2)) if sec1 != sec2 else 1
-                                score2 *= 1 if warped else 0.1 ** d
-                        score3 *= arg.env.likely_assign[j] * (1 if sec2 in arg.warps else (0.1 if sec1 in arg.warps else 0.5))
-                        score4 *= 1/(max(1, min(sec2.distance(wsec)/(arg.env.sector_radius*2) for wsec in arg.warps))**2) if sec2 not in arg.warps else 1
-                    score = score1 * score2 * score3 * score4
                     assignment_dict = defaultdict(list)
                     for i, j in enumerate(assignment):
+                        sec1 = find_sector(env.sectors, i)
+                        sec2 = find_sector(env.sectors, j)
+                        for k, warped in neighbourhood[i]:
+                            if k == j:
+                                d = max(1, sec1.distance(sec2)/(env.sector_radius*2)) if sec1 != sec2 else 1
+                                score2 *= 1 if warped else 0.01 ** d
+                        score3 *= env.likely_assign[j] * (1 if sec2 in arg.warps else (0.1 if sec1 in arg.warps else 0.5))
+                        score4 *= 1/(max(1, min(sec2.distance(wsec)/(env.sector_radius*2) for wsec in arg.warps))**2) if sec2 not in arg.warps else 1
                         assignment_dict[j].append(i)
-                    solution = Solution(score, counter.next(), arg.ts_sectors, arg.warps, assignment_dict)
-                    outqueue.put(solution)
+                    score = score1 * score2 * score3 * score4
+                    outqueue.put(Solution(score, counter.next(), arg.ts_sectors, arg.warps, assignment_dict))
         except Empty:
             pass
 
@@ -198,24 +191,28 @@ def find_neighbours(sectors, warps):
             close_sectors[sector] = set(adjacent_sectors[sector])
     for sector in sectors:
         for i in sector.content:
-            yield i, tuple(sorted((j, sector in warps and othersec in warps) for othersec in close_sectors[sector] for j in othersec.content if i!=j))
+            yield i, tuple((j, sector in warps and othersec in warps) for othersec in close_sectors[sector] for j in othersec.content if i!=j)
 
 
-def sample_assigments(arg, neighbourhood, progress):
-    count = len(arg.env.targets)
-    assignments = product(*((j for j, _ in neighbourhood[i] if not arg.env.storages[j]) for i in range(count) if i in neighbourhood))
-    max_progress = math.prod(sum(1 for j, _ in neighbourhood[i] if not arg.env.storages[j]) for i in range(count) if i in neighbourhood)
-    progress.max.value = max_progress/1000 if max_progress > 100 else max_progress
+def find_sector(sectors, so):
+    for sector in sectors:
+        if so in sector.content:
+            return sector
+
+
+def sample_assigments(env, neighbourhood, progress):
+    assignments = product(*((j for j, _ in neighbourhood[i] if not env.storages[j]) for i in neighbourhood.keys()))
+    max_progress = math.prod(sum(1 for j, _ in neighbourhood[i] if not env.storages[j]) for i in neighbourhood.keys())
+    progress.max.value = int(max_progress/1000) if max_progress > 100 else max_progress
     progress.curr.value = 0
     while True:
-        block = list(islice(assignments, 0, 10000))
+        block = list(islice(assignments, 0, 100000))
         try:
-            for assignment in sample(block, 10):
-                progress.curr.value += 1
+            for i, assignment in enumerate(sample(block, 100), start=progress.curr.value+1):
+                progress.curr.value = i
                 yield assignment
         except ValueError:
-            yield from block
-            for assignment in block:
-                progress.curr.value += 1
+            for i, assignment in enumerate(block, start=progress.curr.value+1):
+                progress.curr.value = i
                 yield assignment
             break
