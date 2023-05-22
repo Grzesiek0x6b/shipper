@@ -1,7 +1,3 @@
-__pycache__/hexagon.cpython-39.pyc
-__pycache__/main.cpython-39.pyc
-__pycache__/mst.cpython-39.pyc
-__pycache__/solutions.cpython-39.pyc
-__pycache__/ui.cpython-39.pyc
+__pycache__/
 build/
 venv/
