@@ -4,6 +4,8 @@ from collections import defaultdict
 from functools import partial
 from itertools import chain, combinations
 import math
+import multiprocessing
+import os
 from queue import Empty
 from random import random
 
@@ -660,7 +662,9 @@ class App:
         self.consumers_thread, self.solutions_queue, self.consumers_progress, self.total_progress = solutions.compute(env)
 
 
+
 def main():
+    multiprocessing.freeze_support()
     pygame.init()
     pygame.display.set_caption('HS Shipper')
     screen_size = (1024, 768)

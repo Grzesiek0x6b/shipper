@@ -1,6 +1,8 @@
 from itertools import accumulate, chain, starmap
 import math
+import os
 import random
+import sys
 import pygame
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -662,7 +664,7 @@ class Manager(EventHandler):
         self.screen_size = screen_size
         self._elements = [Background(width=screen_size[0], height=screen_size[1])]
         pygame.font.init()
-        self.font = pygame.Font("seguisym.ttf", 18)
+        self.font = pygame.font.Font(resource_path("seguisym.ttf"), 18)
         for element in elements:
             self.add(element)
         self.handle = self._show_tooltip
@@ -706,7 +708,7 @@ class Manager(EventHandler):
             if element.is_visible:
                 element.render(screen)
 
-    def _show_tooltip(self, event: pygame.Event):
+    def _show_tooltip(self, event):
         if event.type in self.mouse_events.keys():
             mouse_pos = pygame.mouse.get_pos()
             for element in self.elements:
@@ -728,3 +730,12 @@ def colors_avg(colors):
     for color in colors:
         acc = (acc[0]+color[0], acc[1]+color[1], acc[2]+color[2])
     return acc[0]/count, acc[1]/count, acc[2]/count
+
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
