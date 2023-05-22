@@ -263,8 +263,9 @@ class App:
         self.screen_size = screen_size
         self.sector_radius = 1
         self.uimanager = ui.Manager(screen_size=self.screen_size)
-        self.thread = None
-        self.progress = None
+        self.consumers_thread = None
+        self.consumers_progress = None
+        self.total_progress = None
         self.solutions_queue = None
         self.warps_count = 0
         self.warps_lines = []
@@ -498,15 +499,22 @@ class App:
     def init_results_panel(self, menu_btn):
         orig_menu_btn_update = menu_btn.update
 
-        def update_progressbar_width(bar, i, max_width):
-            if self.progress:
-                p = self.progress[i]
+        def update_total_progress(bar, max_width):
+            if self.total_progress:
+                bar.width = min(self.total_progress() * max_width, max_width)
+
+        def update_consumer_progress(bar, i, max_width):
+            if self.consumers_progress:
+                p = self.consumers_progress[i]
                 bar.width = min((p.curr.value/p.max.value) * max_width, max_width) if p.max.value else 0
 
-        progressbar = ui.StackPanel(spacing=0, relative_top=-10)
+        progressbar = ui.StackPanel(spacing=0, relative_top=-20)
+        total = ui.Background(color=(70,255,100), height=5)
+        total.update = partial(update_total_progress, bar=total, max_width=200)
+        progressbar.add(total)
         for i in range(solutions.PROCESSES):
             bar = ui.Background(color=(70,100,255), height=5)
-            bar.update = partial(update_progressbar_width, bar=bar, i=i, max_width=200)
+            bar.update = partial(update_consumer_progress, bar=bar, i=i, max_width=200)
             progressbar.add(bar)
 
         scores_label = ui.Label(text="Top 10 solutions:", width=200, height=30)
@@ -589,7 +597,7 @@ class App:
                     scores_panel.clear()
                     scores_panel.add_range(reversed([sb[3] for sb in sorted_buttons]))
                 except Empty:
-                    if self.thread and not self.thread.is_alive():
+                    if self.consumers_thread and not self.consumers_thread.is_alive():
                         menu_btn.update = orig_menu_btn_update
                         menu_btn.is_toogled = True
                         progressbar.is_visible = False
@@ -649,7 +657,7 @@ class App:
             likely_assign=[so.likely_assign for so in self.targets]
         )
 
-        self.thread, self.inqueue, self.solutions_queue, self.progress = solutions.compute(env)
+        self.consumers_thread, self.solutions_queue, self.consumers_progress, self.total_progress = solutions.compute(env)
 
 
 def main():

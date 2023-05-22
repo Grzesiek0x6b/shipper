@@ -4,7 +4,6 @@ from itertools import combinations, groupby, islice, product
 import math
 from multiprocessing import Manager, Pool
 from queue import Empty
-from random import sample
 from threading import Thread
 from typing import Dict, List, Tuple
 
@@ -88,15 +87,17 @@ def compute(env):
     m = Manager()
     inqueue = m.Queue(100000)
     outqueue = m.Queue(100000)
-    progress = [Progress(m) for _ in range(PROCESSES)]
+    consumers_progress = [Progress(m) for _ in range(PROCESSES)]
+    total_produced = m.Value("i", 0)
+    total_consumed = [m.Value("i", 0) for _ in range(PROCESSES)]
 
     def run_consumers():
         with Pool(processes=PROCESSES) as pool:
-            pool.map_async(consumer, ((inqueue, outqueue, env, Counter(PROCESSES, i), p) for i, p in enumerate(progress))).get()
+            pool.map_async(consumer, ((inqueue, outqueue, env, Counter(PROCESSES, i), individual_progress, total_consumed[i]) for i, individual_progress in enumerate(consumers_progress))).get()
         pool.close()
         pool.join()
 
-    pthread = Thread(target=producer, args=(inqueue, env))
+    pthread = Thread(target=producer, args=(inqueue, env, total_produced))
     pthread.daemon = True
     pthread.start()
 
@@ -104,7 +105,12 @@ def compute(env):
     cthread.daemon = True
     cthread.start()
 
-    return cthread, inqueue, outqueue, progress
+    def progress():
+        produced = total_produced.value
+        consumed = sum(c.value for c in total_consumed)
+        return consumed/produced if produced > 0 else 0
+
+    return cthread, outqueue, consumers_progress, progress
 
 
 def ts_selection(env):
@@ -127,23 +133,25 @@ def warps_selection(sectors, count):
             yield tuple(cw[0])
         return
         
-def producer(inqueue, env):
+def producer(inqueue, env, total_produced):
     for ts_sectors in ts_selection(env):
         sectors = env.colonized_sectors + list(ts_sectors)
         warps_count = min(len(sectors)-1, env.warps_count)
         for warps in warps_selection(sectors, warps_count):
+            total_produced.value += 1
             inqueue.put(ConsumerArgs(ts_sectors, warps))
     inqueue.put(StopIteration())
 
 
 def consumer(args):
-    inqueue, outqueue, env, counter, progress = args
+    inqueue, outqueue, env, counter, progress, consumed_progress = args
     while True:
         try:
             arg = inqueue.get(True, 1)
             if isinstance(arg, StopIteration):
                 inqueue.put(arg)
                 break
+            consumed_progress.value += 1
             neighbourhood = dict(find_neighbours(env.sectors, arg.warps))
             for assignment in sample_assigments(env, neighbourhood, progress):
                 capacities_left = env.capacities.copy()
@@ -166,9 +174,9 @@ def consumer(args):
                         for k, warped in neighbourhood[i]:
                             if k == j:
                                 d = max(1, sec1.distance(sec2)/(env.sector_radius*2)) if sec1 != sec2 else 1
-                                score2 *= 1 if warped else 0.01 ** d
-                        score3 *= env.likely_assign[j] * (1 if sec2 in arg.warps else (0.1 if sec1 in arg.warps else 0.5))
-                        score4 *= 1/(max(1, min(sec2.distance(wsec)/(env.sector_radius*2) for wsec in arg.warps))**2) if sec2 not in arg.warps else 1
+                                score2 *= d if warped else 0.1 ** d
+                        score3 *= env.likely_assign[j] * (1 if sec1 in arg.warps and sec2 in arg.warps else (0.05 if sec1 in arg.warps else 0.01))
+                        score4 *= 1/(max(1, min(sec2.distance(wsec)/(env.sector_radius*2) for wsec in arg.warps))**2) if sec1 not in arg.warps or sec2 not in arg.warps else 1
                         assignment_dict[j].append(i)
                     score = score1 * score2 * score3 * score4
                     outqueue.put(Solution(score, counter.next(), arg.ts_sectors, arg.warps, assignment_dict))
@@ -177,21 +185,13 @@ def consumer(args):
 
 
 def find_neighbours(sectors, warps):
-    adjacent_sectors = {}
-    close_sectors = {}
     for sector in sectors:
-        adjacent_sectors[sector] = set(other for other in sectors if sector.is_adjacent(other))
-        adjacent_sectors[sector].add(sector)
-    for sector in sectors:
+        neighbours = set(other for other in sectors if sector.is_adjacent(other))
+        neighbours.add(sector)
         if sector in warps:
-            close_sectors[sector] = set(adjacent_sectors[sector])
-            for other in warps:
-                close_sectors[sector].update(adjacent_sectors[other])
-        else:
-            close_sectors[sector] = set(adjacent_sectors[sector])
-    for sector in sectors:
+            neighbours.update(warps)
         for i in sector.content:
-            yield i, tuple((j, sector in warps and othersec in warps) for othersec in close_sectors[sector] for j in othersec.content if i!=j)
+            yield i, tuple((j, sector in warps and othersec in warps) for othersec in neighbours for j in othersec.content if i!=j)
 
 
 def find_sector(sectors, so):
@@ -203,16 +203,10 @@ def find_sector(sectors, so):
 def sample_assigments(env, neighbourhood, progress):
     assignments = product(*((j for j, _ in neighbourhood[i] if not env.storages[j]) for i in neighbourhood.keys()))
     max_progress = math.prod(sum(1 for j, _ in neighbourhood[i] if not env.storages[j]) for i in neighbourhood.keys())
-    progress.max.value = int(max_progress/1000) if max_progress > 100 else max_progress
+    step = int(max(max_progress/10000, 1))
+    progress.max.value = max_progress
     progress.curr.value = 0
-    while True:
-        block = list(islice(assignments, 0, 100000))
-        try:
-            for i, assignment in enumerate(sample(block, 100), start=progress.curr.value+1):
-                progress.curr.value = i
-                yield assignment
-        except ValueError:
-            for i, assignment in enumerate(block, start=progress.curr.value+1):
-                progress.curr.value = i
-                yield assignment
-            break
+    for assigment in islice(assignments, None, None, step):
+        progress.curr.value += step
+        yield assigment
+

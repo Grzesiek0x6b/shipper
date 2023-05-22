@@ -196,11 +196,11 @@ class Background(Element):
     
     @property
     def tooltip(self):
-        return None
+        return super().tooltip
     
     @tooltip.setter
-    def tooltip(self, content):
-        pass
+    def tooltip(self, text):
+        super(__class__, self.__class__).tooltip.__set__(self, text)
 
 @dataclass
 class BoldLine(Element):
@@ -582,11 +582,11 @@ class Panel(Element, EventHandler):
 
     @property
     def tooltip(self):
-        return None
+        return super().tooltip
     
     @tooltip.setter
     def tooltip(self, text):
-        pass
+        super(__class__, self.__class__).tooltip.__set__(self, text)
 
     def update(self):
         for element in self.elements:
