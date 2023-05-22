@@ -664,7 +664,7 @@ class Manager(EventHandler):
         self.screen_size = screen_size
         self._elements = [Background(width=screen_size[0], height=screen_size[1])]
         pygame.font.init()
-        self.font = pygame.font.Font(resource_path("seguisym.ttf"), 18)
+        self.font = pygame.Font(resource_path("seguisym.ttf"), 18)
         for element in elements:
             self.add(element)
         self.handle = self._show_tooltip
