@@ -167,6 +167,7 @@ def consumer(args):
                     score2 = 1
                     score3 = 1
                     score4 = 1
+                    score5 = 0
                     assignment_dict = defaultdict(list)
                     for i, j in enumerate(assignment):
                         sec1 = find_sector(env.sectors, i)
@@ -175,10 +176,11 @@ def consumer(args):
                             if k == j:
                                 d = max(1, sec1.distance(sec2)/(env.sector_radius*2)) if sec1 != sec2 else 1
                                 score2 *= d if warped else 0.1 ** d
-                        score3 *= env.likely_assign[j] * (1 if sec1 in arg.warps and sec2 in arg.warps else (0.05 if sec1 in arg.warps else 0.01))
+                        score3 *= env.likely_assign[j]
                         score4 *= 1/(max(1, min(sec2.distance(wsec)/(env.sector_radius*2) for wsec in arg.warps))**2) if sec1 not in arg.warps or sec2 not in arg.warps else 1
+                        score5 += 1 if sec1 in arg.warps and sec2 in arg.warps else 0
                         assignment_dict[j].append(i)
-                    score = score1 * score2 * score3 * score4
+                    score = score1 * score2 * score3 * score4 * score5
                     outqueue.put(Solution(score, counter.next(), arg.ts_sectors, arg.warps, assignment_dict))
         except Empty:
             pass
