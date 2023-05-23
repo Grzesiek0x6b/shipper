@@ -570,7 +570,7 @@ class App:
                     x2 += 20 if self.targets[j].full_name == "Fire1" else 0
                     line = ui.Arrow(x1=x1, y1=y1, x2=x2, y2=y2, color=self.targets[j].color)
                     line.is_visible = False
-                    line.tooltip=f"{self.targets[i].full_name} -> {self.targets[j].full_name}"
+                    line.tooltip=f"{self.targets[i].full_name} → {self.targets[j].full_name}"
                     self.assigment_lines[sourcesec].append(line)
                     self.uimanager.add(line)
 
