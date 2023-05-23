@@ -265,6 +265,29 @@ class BoldLine(Element):
     def tooltip(self, text):
         super(__class__, self.__class__).tooltip.__set__(self, text)
 
+
+class LineWithDots(BoldLine):
+
+    def render(self, screen):
+        super().render(screen)
+        pygame.draw.circle(screen, self.highlight_color, (self.x1, self.y1), self.width * 1.5)
+        pygame.draw.circle(screen, self.highlight_color, (self.x2, self.y2), self.width * 1.5)
+
+
+class Arrow(BoldLine):
+
+    def render(self, screen):
+        super().render(screen)
+        pygame.draw.polygon(screen, self.highlight_color, list(self.get_triangle_points()))
+
+    def get_triangle_points(self):
+        rotation = (math.atan2(self.y1 - self.y2, self.x1 - self.x2)) + math.pi
+        triangle = [0, (3 * math.pi / 4), (5 * math.pi / 4)]
+        for t in triangle:
+            x = self.x2 + self.width * 2 * math.cos(t + rotation)
+            y = self.y2 + self.width * 2 * math.sin(t + rotation)
+            yield x, y
+
 @dataclass
 class Label(Element):
     
