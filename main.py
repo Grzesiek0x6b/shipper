@@ -252,13 +252,15 @@ class Sector(ui.HexButton):
         return math.isclose(self.distance(other), 2 * self.minimal_radius, rel_tol=0.05)
     
     def alias(self, targets):
-        return solutions.SectorAlias(
-            location=self.sector_location, 
-            type=self.sector_type, 
-            content=[targets.index(so) for so in self.sector_content if isinstance(so, TradeStation) or so.colonized],
-            targets=sum(so.targets for so in self.sector_content if isinstance(so, TradeStation) or so.colonized),
-            center=self.center,
-            minimal_radius=self.minimal_radius)
+        secalias = solutions.SectorAlias()
+        secalias.location=self.sector_location
+        secalias.type=self.sector_type
+        secalias.content=[targets.index(so) for so in self.sector_content if isinstance(so, TradeStation) or so.colonized]
+        secalias.targets=sum(so.targets for so in self.sector_content if isinstance(so, TradeStation) or so.colonized)
+        secalias.center=self.center
+        secalias.minimal_radius=self.minimal_radius
+        return secalias
+
 
 class App:
     def __init__(self, screen_size):
@@ -559,9 +561,9 @@ class App:
                 line = ui.LineWithDots(x1=x1, y1=y1, x2=x2, y2=y2, color=(255,255,255))
                 self.warps_lines.append(line)
                 self.uimanager.add(line)
-            for i, js in solution.assignment_dict.items():
+            for i in solution.assignment_dict:
                 sourcesec = self.targets[i].get_sector(self.sectors)
-                for j in js:
+                for j in solution.assignment_dict[i]:
                     destsec = self.targets[j].get_sector(self.sectors)
                     (x1, y1), (x2, y2) = sourcesec.center, destsec.center
                     y1 -= 1/3 * self.sector_radius - 5
@@ -639,6 +641,7 @@ class App:
         empty_sectors = [sector for sector in self.sectors if sector.sector_type == "empty"]
         colonized_sectors = [sector for sector in self.sectors if sector.sector_type=="planets" and any(planet.colonized for planet in sector.sector_content)]
         adjacent_empty_sectors = set(empty for empty in empty_sectors for colonized in colonized_sectors if empty.is_adjacent(colonized))
+        interesting_sectors = list(set(colonized_sectors).union(adjacent_empty_sectors))
         colonized_planets = [planet for sector in colonized_sectors for planet in sector.sector_content if planet.colonized]
         self.stations = [TradeStation(i+1) for i in range(self.stations_count)]
         self.targets = colonized_planets + self.stations
@@ -647,17 +650,17 @@ class App:
         per_target = all_packages / sum(so.targets for so in self.targets)
         capacities = [so.capacity/per_target for so in self.targets]
 
-        env = solutions.Env(
-            colonized_sectors=[sec.alias(self.targets) for sec in colonized_sectors],
-            empty_sectors=[sec.alias(self.targets) for sec in adjacent_empty_sectors],
-            sector_radius=self.sector_radius,
-            warps_count=self.warps_count,
-            stations=[self.targets.index(ts) for ts in self.stations],
-            capacities=capacities,
-            targets=[so.targets for so in self.targets],
-            storages=[so.storage for so in self.targets],
-            likely_assign=[so.likely_assign for so in self.targets]
-        )
+        env = solutions.Env()
+        env.sectors = [sec.alias(self.targets) for sec in interesting_sectors]
+        env.colonized_sectors=[interesting_sectors.index(sec) for sec in colonized_sectors]
+        env.empty_sectors=[interesting_sectors.index(sec) for sec in adjacent_empty_sectors]
+        env.sector_radius=self.sector_radius
+        env.warps_count=self.warps_count
+        env.stations=[self.targets.index(ts) for ts in self.stations]
+        env.capacities=capacities
+        env.targets=[so.targets for so in self.targets]
+        env.storages=[so.storage for so in self.targets]
+        env.likely_assign=[so.likely_assign for so in self.targets]
 
         self.consumers_thread, self.solutions_queue, self.consumers_progress, self.total_progress = solutions.compute(env)
 
