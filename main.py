@@ -559,9 +559,9 @@ class App:
                 line = ui.LineWithDots(x1=x1, y1=y1, x2=x2, y2=y2, color=(255,255,255))
                 self.warps_lines.append(line)
                 self.uimanager.add(line)
-            for i in solution.assignment_dict:
+            for i in solution.directions:
                 sourcesec = self.computing.targets[i].get_sector(self.computing.sectors)
-                for j in solution.assignment_dict[i]:
+                for j in solution.directions[i]:
                     destsec = self.computing.targets[j].get_sector(self.computing.sectors)
                     (x1, y1), (x2, y2) = sourcesec.center, destsec.center
                     y1 -= 1/3 * self.sector_radius - 5
@@ -589,7 +589,7 @@ class App:
             orig_menu_btn_update()
             if self.computing is None:
                 return
-            while True:
+            for _ in range(100):
                 try:
                     solution = self.computing.solutions.get_nowait()
                     self.solution_number += 1
@@ -688,7 +688,7 @@ def main():
         uimanager.update()
         uimanager.render(screen)
         pygame.display.flip()
-        clock.tick(100)
+        clock.tick(50)
     pygame.display.quit()
 
 
