@@ -1,9 +1,19 @@
 # distutils: language = c++
 
+from libcpp.algorithm cimport lower_bound
 from libcpp.map cimport map as cmap
 from libcpp.pair cimport pair as cpair
 from libcpp.set cimport set as cset
 from libcpp.vector cimport vector
+
+from collections import defaultdict
+import cython
+from cython.operator import dereference
+from cython.parallel import parallel
+from itertools import combinations, groupby
+import math
+from multiprocessing import Queue
+from threading import Thread
 
 cdef extern from "<atomic>" namespace "std" nogil:
     cdef cppclass atomic_long:
@@ -16,17 +26,15 @@ cdef extern from "<atomic>" namespace "std" nogil:
 ctypedef atomic_long* atomic_long_ptr
 
 
-from collections import defaultdict
-import cython
-from cython.operator import dereference
-from cython.parallel import parallel
-from itertools import combinations, groupby
-import math
-from multiprocessing import Manager, Queue
-import numpy as np
-from queue import Empty
-from threading import Thread
-from typing import Dict, List, Tuple
+@cython.wraparound(False)
+cdef bint insort_float(vector[float]& vec, float value) nogil:
+    cdef bint result
+    result = vec.back() < value
+    it = lower_bound(vec.begin(), vec.end(), value)
+    vec.insert(it, value)
+    if vec.begin() + 10 < vec.end():
+        vec.erase(vec.begin() + 10, vec.end())
+    return result
 
 
 # cdef struct Progress:
@@ -182,7 +190,6 @@ cdef class Compute:
     def progress(self):
         produced = self.total_produced.load()
         consumed = sum(c.load() for c in self.total_consumed)
-        print(produced, consumed)
         return consumed/produced if produced > 0 else 0
     
     def subprogresses(self) -> vector[cpair[int, int]]:
@@ -217,15 +224,15 @@ cdef class Compute:
         self.env.targets.storages = [obj.storage for obj in self.targets]
         self.env.targets.likely_assign = [obj.likely_assign for obj in self.targets]
 
-    def _produce(self):
+    def _produce(self) -> void:
         for ts_sectors in self.ts_selection():
             warps_count = min(len(self.env.sectors.colonized)+len(ts_sectors)-1, self.env.warps_count)
             for warps in self.warps_selection(ts_sectors, warps_count):
-                self.total_produced.fetch_add(1)
                 arg = ConsumerArgs(ts_sectors, warps)
                 # arg.ts_sectors = ts_sectors
                 # arg.warps = warps
                 self.produced.put(arg)
+                self.total_produced.fetch_add(1)
         self.produced.put(StopIteration())
 
 
@@ -256,6 +263,9 @@ cdef void consume(Env& env, object produced, object solutions, cpair[atomic_long
     cdef ConsumerArgs arg
     cdef cpair[bint, vector[Py_ssize_t]] assignment
     cdef float score
+    cdef vector[float] top_scores
+
+    top_scores.push_back(0.0)
 
     while True:
         with gil:
@@ -264,7 +274,6 @@ cdef void consume(Env& env, object produced, object solutions, cpair[atomic_long
                 produced.put(fromq)
                 break
             arg = fromq
-            tprogress.fetch_add(1)
         neighbourhood = find_neighbours(env, arg)
         # with gil:
         #     assignments = product(*(np.array([j for j, _ in neighbourhood[i] if not env.targets.storages[j]]) for i in range(len(env.targets.storages))))
@@ -275,12 +284,13 @@ cdef void consume(Env& env, object produced, object solutions, cpair[atomic_long
         assignment = next_product(assignments)
         while assignment.first:
             score = evaluate(env, arg, neighbourhood, assignment.second)
-            cprogress.first.fetch_add(assignments.step)
-            if score > 0:
+            if insort_float(top_scores, score):
                 with cython.gil:
                     solution = make_solution(score, list(arg.ts_sectors), list(arg.warps), assignment.second)
                     solutions.put(solution)
             assignment = next_product(assignments)
+            cprogress.first.fetch_add(assignments.step)
+        tprogress.fetch_add(1)
         
 
 cdef float evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, vector[Py_ssize_t]& assignment) nogil noexcept:

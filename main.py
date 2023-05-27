@@ -507,8 +507,10 @@ class App:
 
         def update_consumer_progress(bar, i, max_width):
             if self.computing:
-                p = self.computing.subprogresses()[i]
-                bar.width = min((p[0]/p[1]) * max_width, max_width) if p[1] else 0
+                ps = self.computing.subprogresses()
+                if len(ps) > i:
+                    p = ps[i]
+                    bar.width = min((p[0]/p[1]) * max_width, max_width) if p[1] else 0
 
         progressbar = ui.StackPanel(spacing=0, relative_top=-20)
         total = ui.Background(color=(70,255,100), height=5)
