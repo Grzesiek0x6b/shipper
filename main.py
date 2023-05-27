@@ -267,10 +267,7 @@ class App:
         self.screen_size = screen_size
         self.sector_radius = 1
         self.uimanager = ui.Manager(screen_size=self.screen_size)
-        self.consumers_thread = None
-        self.consumers_progress = None
-        self.total_progress = None
-        self.solutions_queue = None
+        self.computing = None
         self.warps_count = 0
         self.warps_lines = []
         self.assigment_lines = defaultdict(list)
@@ -379,7 +376,8 @@ class App:
                     if not any(planet.colonized for planet in sector.sector_content):
                         sector.background = ui.colors_avg(obj.color for obj in sector.sector_content)
             results_panel.is_visible = True
-            self.compute()
+            self.stations = [TradeStation(i+1) for i in range(self.stations_count)]
+            self.computing = solutions.Compute(self)
             self.mode = "results-computing"
 
         btn1.changed = uncovered
@@ -504,19 +502,19 @@ class App:
         orig_menu_btn_update = menu_btn.update
 
         def update_total_progress(bar, max_width):
-            if self.total_progress:
-                bar.width = min(self.total_progress() * max_width, max_width)
+            if self.computing:
+                bar.width = min(self.computing.progress() * max_width, max_width)
 
         def update_consumer_progress(bar, i, max_width):
-            if self.consumers_progress:
-                p = self.consumers_progress[i]
-                bar.width = min((p.curr.value/p.max.value) * max_width, max_width) if p.max.value else 0
+            if self.computing:
+                p = self.computing.subprogresses()[i]
+                bar.width = min((p[0]/p[1]) * max_width, max_width) if p[1] else 0
 
         progressbar = ui.StackPanel(spacing=0, relative_top=-20)
         total = ui.Background(color=(70,255,100), height=5)
         total.update = partial(update_total_progress, bar=total, max_width=200)
         progressbar.add(total)
-        for i in range(solutions.PROCESSES):
+        for i in range(4):
             bar = ui.Background(color=(70,100,255), height=5)
             bar.update = partial(update_consumer_progress, bar=bar, i=i, max_width=200)
             progressbar.add(bar)
@@ -545,15 +543,15 @@ class App:
                     button.is_toogled = False
         
         def display_solution(solution):
-            for secalias, ts in zip(solution.ts_sectors, self.stations):
-                sector = min(s for s in self.sectors if s.sector_location == secalias.location)
+            for sid, ts in zip(solution.ts_sectors, self.stations):
+                sector = self.computing.sectors[sid]
                 sector.sector_content = [ts]
                 sector.sector_type = "station"
             g = Graph(len(solution.warps))
             for secid1, secid2 in combinations(range(len(solution.warps)), 2):
-                g.add_edge(secid1, secid2, solution.warps[secid1].distance(solution.warps[secid2]))
+                g.add_edge(secid1, secid2, self.computing.sectors[solution.warps[secid1]].distance(self.computing.sectors[solution.warps[secid2]]))
             for secid1, secid2 in g.KruskalAlgo():
-                (x1, y1), (x2, y2) = solution.warps[secid1].center, solution.warps[secid2].center
+                (x1, y1), (x2, y2) = self.computing.sectors[solution.warps[secid1]].center, self.computing.sectors[solution.warps[secid2]].center
                 y1 += 2/3 * self.sector_radius - 10
                 y2 += 2/3 * self.sector_radius - 10
                 x1 -= 10
@@ -562,17 +560,17 @@ class App:
                 self.warps_lines.append(line)
                 self.uimanager.add(line)
             for i in solution.assignment_dict:
-                sourcesec = self.targets[i].get_sector(self.sectors)
+                sourcesec = self.computing.targets[i].get_sector(self.computing.sectors)
                 for j in solution.assignment_dict[i]:
-                    destsec = self.targets[j].get_sector(self.sectors)
+                    destsec = self.computing.targets[j].get_sector(self.computing.sectors)
                     (x1, y1), (x2, y2) = sourcesec.center, destsec.center
                     y1 -= 1/3 * self.sector_radius - 5
                     y2 -= 1/3 * self.sector_radius - 5
-                    x1 += 20 if self.targets[i].full_name == "Fire1" else 0
-                    x2 += 20 if self.targets[j].full_name == "Fire1" else 0
-                    line = ui.Arrow(x1=x1, y1=y1, x2=x2, y2=y2, color=self.targets[j].color)
+                    x1 += 20 if self.computing.targets[i].full_name == "Fire1" else 0
+                    x2 += 20 if self.computing.targets[j].full_name == "Fire1" else 0
+                    line = ui.Arrow(x1=x1, y1=y1, x2=x2, y2=y2, color=self.computing.targets[j].color)
                     line.is_visible = False
-                    line.tooltip=f"{self.targets[i].full_name} → {self.targets[j].full_name}"
+                    line.tooltip=f"{self.computing.targets[i].full_name} → {self.computing.targets[j].full_name}"
                     self.assigment_lines[sourcesec].append(line)
                     self.uimanager.add(line)
 
@@ -583,25 +581,30 @@ class App:
                 display_solution(solution)
 
         
+        self.solution_number = 0
+
+
         def menu_btn_update():
+            global solution_number
             orig_menu_btn_update()
-            if self.solutions_queue is None:
+            if self.computing is None:
                 return
             while True:
                 try:
-                    solution = self.solutions_queue.get_nowait()
+                    solution = self.computing.solutions.get_nowait()
+                    self.solution_number += 1
                     button = ui.ToogleButton(
-                        text=f"#{solution.number}",
+                        text=f"#{self.solution_number}",
                         width=200, height=30, display_checkmark=False,
                         foreground=(0,0,0), background=(198,188,83), active_background=(230,210,0))
                     button.highlight_tick = 30
                     button.changed = partial(toogle_button, btn=button, solution=solution)
-                    insort_left(sorted_buttons, (solution.score, random(), solution.number, button))
+                    insort_left(sorted_buttons, (solution.score, random(), self.solution_number, button))
                     del sorted_buttons[:-10]
                     scores_panel.clear()
                     scores_panel.add_range(reversed([sb[3] for sb in sorted_buttons]))
                 except Empty:
-                    if self.consumers_thread and not self.consumers_thread.is_alive():
+                    if self.computing.task and not self.computing.task.is_alive():
                         menu_btn.update = orig_menu_btn_update
                         menu_btn.is_toogled = True
                         progressbar.is_visible = False
@@ -620,7 +623,7 @@ class App:
                 sector.sector_content = self._selected
                 sector.sector_type = "planets"
             elif sector.sector_type == "planets" and sector.sector_content == self._selected:
-                sector.sector_content = None
+                sector.sector_content = []
                 sector.sector_type = "empty"
         elif self.mode == "configure-system":
             for panel in self.planets_panels.elements:
@@ -637,32 +640,32 @@ class App:
                 line.is_highlighted = True
                 line.is_visible = True
 
-    def compute(self):
-        empty_sectors = [sector for sector in self.sectors if sector.sector_type == "empty"]
-        colonized_sectors = [sector for sector in self.sectors if sector.sector_type=="planets" and any(planet.colonized for planet in sector.sector_content)]
-        adjacent_empty_sectors = set(empty for empty in empty_sectors for colonized in colonized_sectors if empty.is_adjacent(colonized))
-        interesting_sectors = list(set(colonized_sectors).union(adjacent_empty_sectors))
-        colonized_planets = [planet for sector in colonized_sectors for planet in sector.sector_content if planet.colonized]
-        self.stations = [TradeStation(i+1) for i in range(self.stations_count)]
-        self.targets = colonized_planets + self.stations
+    # def compute(self):
+    #     # empty_sectors = [sector for sector in self.sectors if sector.sector_type == "empty"]
+    #     # colonized_sectors = [sector for sector in self.sectors if sector.sector_type=="planets" and any(planet.colonized for planet in sector.sector_content)]
+    #     # adjacent_empty_sectors = set(empty for empty in empty_sectors for colonized in colonized_sectors if empty.is_adjacent(colonized))
+    #     # interesting_sectors = list(set(colonized_sectors).union(adjacent_empty_sectors))
+    #     # colonized_planets = [planet for sector in colonized_sectors for planet in sector.sector_content if planet.colonized]
+    #     self.stations = [TradeStation(i+1) for i in range(self.stations_count)]
+    #     # self.targets = colonized_planets + self.stations
         
-        all_packages = sum(so.produces for so in self.targets)
-        per_target = all_packages / sum(so.targets for so in self.targets)
-        capacities = [so.capacity/per_target for so in self.targets]
+    #     all_packages = sum(so.produces for so in self.targets)
+    #     per_target = all_packages / sum(so.targets for so in self.targets)
+    #     capacities = [so.capacity/per_target for so in self.targets]
 
-        env = solutions.Env()
-        env.sectors = [sec.alias(self.targets) for sec in interesting_sectors]
-        env.colonized_sectors=[interesting_sectors.index(sec) for sec in colonized_sectors]
-        env.empty_sectors=[interesting_sectors.index(sec) for sec in adjacent_empty_sectors]
-        env.sector_radius=self.sector_radius
-        env.warps_count=self.warps_count
-        env.stations=[self.targets.index(ts) for ts in self.stations]
-        env.capacities=capacities
-        env.targets=[so.targets for so in self.targets]
-        env.storages=[so.storage for so in self.targets]
-        env.likely_assign=[so.likely_assign for so in self.targets]
+    #     env = solutions.Env()
+    #     env.sectors = [sec.alias(self.targets) for sec in interesting_sectors]
+    #     env.colonized_sectors=[interesting_sectors.index(sec) for sec in colonized_sectors]
+    #     env.empty_sectors=[interesting_sectors.index(sec) for sec in adjacent_empty_sectors]
+    #     env.sector_radius=self.sector_radius
+    #     env.warps_count=self.warps_count
+    #     env.stations=[self.targets.index(ts) for ts in self.stations]
+    #     env.capacities=capacities
+    #     env.targets=[so.targets for so in self.targets]
+    #     env.storages=[so.storage for so in self.targets]
+    #     env.likely_assign=[so.likely_assign for so in self.targets]
 
-        self.consumers_thread, self.solutions_queue, self.consumers_progress, self.total_progress = solutions.compute(env)
+    #     self.solution_finder, self.solutions_queue, self.consumers_progress, self.total_progress = 
 
 
 
