@@ -4,7 +4,7 @@ from Cython.Build import cythonize
 
 extensions = [
     Extension("solutions", ["solutions.pyx"],
-              extra_compile_args=['/openmp', '/O2'], extra_link_args=['/openmp'])
+              extra_compile_args=['-openmp', '-O2'], extra_link_args=['-openmp'])
 ]
 setup(
     name="hsshipper",

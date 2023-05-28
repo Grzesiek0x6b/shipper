@@ -591,7 +591,7 @@ class App:
             orig_menu_btn_update()
             if self.computing is None:
                 return
-            for _ in range(100):
+            for _ in range(10):
                 try:
                     solution = self.computing.solutions.get_nowait()
                     self.solution_number += 1
