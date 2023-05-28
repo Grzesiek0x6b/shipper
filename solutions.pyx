@@ -146,18 +146,6 @@ cdef object make_solution(SolutionDataObject& sdo):
     return solution
 
 
-    
-# def make_solution(score, ts_sectors, warps, assignment):
-#     solution = Solution()
-#     solution.score = score
-#     solution.ts_sectors = ts_sectors
-#     solution.warps = warps
-#     directions = defaultdict(list)
-#     for i, j in enumerate(assignment):
-#         directions[j].append(i)
-#     solution.directions = {k: v for k, v in directions.items()}
-#     return solution
-
 ctypedef cpair[atomic_size, atomic_size]* asize_pair_ptr
 
 ctypedef cqueue[SolutionDataObject]* collector_qt
@@ -179,7 +167,6 @@ cdef class Compute:
     cdef vector[collector_pt] collectors
 
     def __cinit__(self, app):
-        # self.produced = Queue(100000)
         self.solutions = Queue(100000)
         self.total_produced.store(0)
 
