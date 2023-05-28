@@ -14,6 +14,7 @@ from cython.parallel import parallel
 from itertools import combinations, groupby
 import math
 from multiprocessing import Queue
+from queue import Empty
 from threading import Thread
 
 cdef extern from "<atomic>" namespace "std" nogil:
@@ -25,6 +26,13 @@ cdef extern from "<atomic>" namespace "std" nogil:
         long fetch_add(long) nogil noexcept
 
 ctypedef atomic_long* atomic_long_ptr
+
+cdef extern from "<chrono>" namespace "std::chrono" nogil:
+    cdef cppclass milliseconds:
+        milliseconds(int) nogil noexcept
+
+cdef extern from "<thread>" namespace "std::this_thread" nogil:
+    cdef void sleep_for(milliseconds&) nogil noexcept
 
 
 @cython.boundscheck(False)
@@ -225,7 +233,12 @@ cdef void consume(Env& env, object produced, object solutions, cpair[atomic_long
 
     while True:
         with gil:
-            fromq = produced.get(True)
+            try:
+                fromq = produced.get(False)
+            except Empty:
+                with nogil:
+                    sleep_for(milliseconds(1))
+                    continue
             if isinstance(fromq, StopIteration):
                 produced.put(fromq)
                 break
