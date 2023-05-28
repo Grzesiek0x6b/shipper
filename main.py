@@ -523,7 +523,6 @@ class App:
 
         scores_label = ui.Label(text="Top 10 solutions:", width=200, height=30)
         scores_panel = ui.StackPanel(relative_top=0, spacing=5)
-        # scores_panel.is_enabled = False
 
         sorted_buttons = []
 
@@ -641,34 +640,6 @@ class App:
             for line in self.assigment_lines[sector]:
                 line.is_highlighted = True
                 line.is_visible = True
-
-    # def compute(self):
-    #     # empty_sectors = [sector for sector in self.sectors if sector.sector_type == "empty"]
-    #     # colonized_sectors = [sector for sector in self.sectors if sector.sector_type=="planets" and any(planet.colonized for planet in sector.sector_content)]
-    #     # adjacent_empty_sectors = set(empty for empty in empty_sectors for colonized in colonized_sectors if empty.is_adjacent(colonized))
-    #     # interesting_sectors = list(set(colonized_sectors).union(adjacent_empty_sectors))
-    #     # colonized_planets = [planet for sector in colonized_sectors for planet in sector.sector_content if planet.colonized]
-    #     self.stations = [TradeStation(i+1) for i in range(self.stations_count)]
-    #     # self.targets = colonized_planets + self.stations
-        
-    #     all_packages = sum(so.produces for so in self.targets)
-    #     per_target = all_packages / sum(so.targets for so in self.targets)
-    #     capacities = [so.capacity/per_target for so in self.targets]
-
-    #     env = solutions.Env()
-    #     env.sectors = [sec.alias(self.targets) for sec in interesting_sectors]
-    #     env.colonized_sectors=[interesting_sectors.index(sec) for sec in colonized_sectors]
-    #     env.empty_sectors=[interesting_sectors.index(sec) for sec in adjacent_empty_sectors]
-    #     env.sector_radius=self.sector_radius
-    #     env.warps_count=self.warps_count
-    #     env.stations=[self.targets.index(ts) for ts in self.stations]
-    #     env.capacities=capacities
-    #     env.targets=[so.targets for so in self.targets]
-    #     env.storages=[so.storage for so in self.targets]
-    #     env.likely_assign=[so.likely_assign for so in self.targets]
-
-    #     self.solution_finder, self.solutions_queue, self.consumers_progress, self.total_progress = 
-
 
 
 def main():
