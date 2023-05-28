@@ -524,6 +524,9 @@ class App:
         scores_label = ui.Label(text="Top 10 solutions:", width=200, height=30)
         scores_panel = ui.StackPanel(relative_top=0, spacing=5)
 
+        show_all_arrows_btn = ui.Button(text="Show all directions", width=200, height=30, background=(0, 153, 102))
+        show_all_arrows_btn.is_enabled = False
+
         sorted_buttons = []
 
         def clear_solution():
@@ -567,9 +570,9 @@ class App:
                     (x1, y1), (x2, y2) = sourcesec.center, destsec.center
                     y1 -= 1/3 * self.sector_radius - 5
                     y2 -= 1/3 * self.sector_radius - 5
-                    x1 += 20 if self.computing.targets[i].full_name == "Fire1" else 0
-                    x2 += 20 if self.computing.targets[j].full_name == "Fire1" else 0
-                    line = ui.Arrow(x1=x1, y1=y1, x2=x2, y2=y2, color=self.computing.targets[j].color)
+                    x1 += (20 if self.computing.targets[i].full_name == "Fire1" else 0) + random() * 20 - 10
+                    x2 += (20 if self.computing.targets[j].full_name == "Fire1" else 0) + random() * 20 - 10
+                    line = ui.Arrow(x1=x1, y1=y1, x2=x2, y2=y2, color=ui.highlight(self.computing.targets[j].color, 2))
                     line.is_visible = False
                     line.tooltip=f"{self.computing.targets[i].full_name} → {self.computing.targets[j].full_name}"
                     self.assigment_lines[sourcesec].append(line)
@@ -580,7 +583,14 @@ class App:
             if btn.is_toogled:
                 untoogle_other(btn)
                 display_solution(solution)
+                show_all_arrows_btn.is_enabled = True
 
+        def show_all_arrows(event):
+            for lines in self.assigment_lines.values():
+                for line in lines:
+                    line.is_visible = True
+
+        show_all_arrows_btn.mouse_button_down = show_all_arrows
         
         self.solution_number = 0
 
@@ -614,7 +624,7 @@ class App:
 
         menu_btn.update = menu_btn_update
 
-        return (progressbar, scores_label, scores_panel)
+        return (progressbar, show_all_arrows_btn, scores_label, scores_panel)
 
     def toogle_sector(self, sector):
         if self.mode == "reveal":
