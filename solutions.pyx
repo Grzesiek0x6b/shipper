@@ -339,7 +339,7 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
                 sdo.guard = False
                 if collector.second.try_lock_for(milliseconds(100)):
                     for buffered in buffer:
-                        collector.first.push(sdo)
+                        collector.first.push(buffered)
                     buffer.clear()
                     collector.first.push(sdo)
                     collector.second.unlock()
@@ -348,6 +348,13 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
             assignment = next_product(assignments)
             cprogress.first.fetch_add(assignments.step)
         tprogress.fetch_add(1)
+    collector.second.lock()
+    for buffered in buffer:
+        collector.first.push(buffered)
+    buffer.clear()
+    sdo.guard = True
+    collector.first.push(sdo)
+    collector.second.unlock()
         
 
 @cython.boundscheck(False)
