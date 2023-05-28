@@ -280,7 +280,7 @@ cdef class Compute:
                     q = dereference(it).first
                     l = dereference(it).second
                     if l.try_lock_for(milliseconds(100)):
-                        for j in range(min(q.size(), 10)):
+                        for j in range(min(q.size(), 100)):
                             sdo = q.front()
                             if sdo.guard:
                                 collectors.erase(it)
@@ -290,6 +290,7 @@ cdef class Compute:
                             with gil:
                                 solutions.put(make_solution(sdo))
                         l.unlock()
+                        sleep_for(milliseconds(100))
                     advance(it, 1)
             if self.threads_count and collectors.size() == 0:
                 return
@@ -304,6 +305,7 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
     cdef double score
     cdef vector[double] top_scores
     cdef SolutionDataObject sdo
+    cdef vector[SolutionDataObject] buffer
 
     top_scores.push_back(0.0)
 
@@ -335,9 +337,14 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
                 sdo.warps = arg.warps
                 sdo.assignment = assignment.second
                 sdo.guard = False
-                collector.second.lock()
-                collector.first.push(sdo)
-                collector.second.unlock()
+                if collector.second.try_lock_for(milliseconds(100)):
+                    for buffered in buffer:
+                        collector.first.push(sdo)
+                    buffer.clear()
+                    collector.first.push(sdo)
+                    collector.second.unlock()
+                else:
+                    buffer.push_back(sdo)
             assignment = next_product(assignments)
             cprogress.first.fetch_add(assignments.step)
         tprogress.fetch_add(1)
