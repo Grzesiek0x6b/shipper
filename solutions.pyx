@@ -360,13 +360,14 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, vector[Py_ssize_t]& assignment) nogil noexcept:
-    cdef double score, score1, score2, score3, score4, r
+    cdef double score, score1, score2, score3, score4, score5, r, d, min_
     cdef Py_ssize_t i, j, k, sid1, sid2
     cdef bint warped, valid
     cdef cpair[Py_ssize_t, Py_ssize_t] size_size_pair
     cdef cpair[Py_ssize_t, double] size_double_pair
     cdef cpair[Py_ssize_t, bint] size_bint_pair
     cdef vector[double] capacities_left
+    cdef vector[Py_ssize_t] sectors
     
     capacities_left = env.targets.capacities
     assignment_enumerated = enumerate_sizes(assignment)
@@ -378,13 +379,14 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     score1 = 1
     capacities_left_enumerated = enumerate_doubles(capacities_left)
     for size_double_pair in capacities_left_enumerated:
-        if not in_vector(arg.warps, find_id(env.sectors.content, size_double_pair.first)):
+        if in_vector(arg.warps, find_id(env.sectors.content, size_double_pair.first)):
             score1 *= size_double_pair.second/env.targets.targets[size_double_pair.first] if is_close(size_double_pair.second, 1, rel_tol=0.05) else 0.5
         else:
             score1 *= size_double_pair.second/env.targets.targets[size_double_pair.first]
     score2 = 1
     score3 = 1
     score4 = 1
+    score5 = 1
     assignment_enumerated = enumerate_sizes(assignment)
     for size_size_pair in assignment_enumerated:
         sid1 = find_id(env.sectors.content, size_size_pair.first)
@@ -397,7 +399,15 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
                 score2 *= d if warped else 0.1 ** d
         score3 *= env.targets.likely_assign[size_size_pair.second]
         score4 += 1 if in_vector(arg.warps, sid1) and in_vector(arg.warps, sid2) else 0
-    score = score1 * score2 * score3 * score4
+    sectors = concat_vectors(env.sectors.colonized, arg.ts_sectors)
+    for sid1 in sectors:
+        if not in_vector(arg.warps, sid1):
+            min_ = 0
+            for sid2 in arg.warps:
+                d = 1.0/distance(env.sectors.center, sid1, sid2)
+                min_ = min(min_, d) if min_ > 0 else d
+            score5 *= min_
+    score = score1 * score2 * score3 * score4 * score5
     return score
 
 
