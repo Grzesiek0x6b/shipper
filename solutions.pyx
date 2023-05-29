@@ -398,7 +398,7 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
                 d = max(1.0, distance(env.sectors.center, sid1, sid2)/(env.sectors.radius*2)) if sid1 != sid2 else 1.0
                 score2 *= d if warped else 0.1 ** d
         score3 *= env.targets.likely_assign[size_size_pair.second]
-        score4 += 1 if in_vector(arg.warps, sid1) and in_vector(arg.warps, sid2) else 0
+        score4 *= 1 if in_vector(arg.warps, sid1) and in_vector(arg.warps, sid2) else 0.5
     sectors = concat_vectors(env.sectors.colonized, arg.ts_sectors)
     for sid1 in sectors:
         if not in_vector(arg.warps, sid1):
