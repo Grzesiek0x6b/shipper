@@ -1,7 +1,7 @@
 # distutils: language = c++
 
 from libcpp.algorithm cimport lower_bound
-from libc.math cimport fabs as cabs
+from libc.math cimport fabs as cabs, hypot
 from libcpp.map cimport map as cmap
 from libcpp.pair cimport pair as cpair
 from libcpp.queue cimport queue as cqueue
@@ -17,6 +17,9 @@ import math
 from multiprocessing import Queue
 from queue import Empty
 from threading import Thread
+
+cdef extern from "<algorithm>" namespace "std" nogil:
+    cdef bint next_permutation[T](T, T) nogil noexcept
 
 cdef extern from "<atomic>" namespace "std" nogil:
     cdef cppclass atomic[T]:
@@ -81,8 +84,8 @@ cdef struct EnvSectors:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline double distance(vector[cpair[double, double]] centers, Py_ssize_t id1, Py_ssize_t id2) nogil noexcept:
-    return ((centers[id1].first - centers[id2].first)**2 + (centers[id1].second - centers[id2].second)**2)**(0.5)
+cdef inline double distance(vector[cpair[double, double]]& centers, Py_ssize_t id1, Py_ssize_t id2) nogil noexcept:
+    return hypot(centers[id1].first - centers[id2].first, centers[id1].second - centers[id2].second)
 
 
 @cython.boundscheck(False)
@@ -93,11 +96,8 @@ cdef inline bint is_close(double a, double b, double rel_tol=0.05) nogil noexcep
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline bint is_adjacent(vector[cpair[double, double]] center, Py_ssize_t id1, Py_ssize_t id2, double radius) nogil noexcept:
-    cdef double a, b
-    a = distance(center, id1, id2)
-    b = 2.0 * radius
-    return is_close(a, b)
+cdef inline bint is_adjacent(vector[cpair[double, double]]& center, Py_ssize_t id1, Py_ssize_t id2, double radius) nogil noexcept:
+    return is_close(distance(center, id1, id2), 2.0 * radius)
 
 
 cdef struct EnvTargets:
@@ -113,9 +113,13 @@ cdef struct Env:
     EnvTargets targets
 
 
+ctypedef vector[double] distances_t
+
+
 cdef struct ConsumerArgs:
     vector[Py_ssize_t] ts_sectors
     vector[Py_ssize_t] warps
+    distances_t offlane_distances
     bint guard
 
 
@@ -144,6 +148,12 @@ cdef object make_solution(SolutionDataObject& sdo):
         dd[j].append(i)
     solution.directions = dict(dd)
     return solution
+
+
+cdef struct Arrow:
+    Py_ssize_t start
+    Py_ssize_t end
+    double length
 
 
 ctypedef cpair[atomic_size, atomic_size]* asize_pair_ptr
@@ -218,13 +228,18 @@ cdef class Compute:
         for ts_sectors in self.ts_selection():
             warps_count = min(len(self.env.sectors.colonized)+len(ts_sectors)-1, self.env.warps_count)
             for warps in self.warps_selection(ts_sectors, warps_count):
-                arg = ConsumerArgs(ts_sectors, warps, False)
+                sectors = list(self.env.sectors.colonized) + list(ts_sectors)
+                distances = [0.0] * len(self.env.sectors.type)
+                for sid1 in sectors:
+                    if sid1 not in warps:
+                        distances[sid1] = min(distance(self.env.sectors.center, sid1, sid2) / (self.env.sectors.radius * 2) for sid2 in warps)
+                arg = ConsumerArgs(ts_sectors, warps, distances, False)
                 self.lock_produced.lock()
                 self.produced.push(arg)
                 self.lock_produced.unlock()
                 self.total_produced.fetch_add(1)
         self.lock_produced.lock()
-        self.produced.push(ConsumerArgs([], [], True))
+        self.produced.push(ConsumerArgs([], [], [], True))
         self.lock_produced.unlock()
 
 
@@ -237,14 +252,16 @@ cdef class Compute:
 
     
     def warps_selection(self, ts_sectors, count):
-        possibilities = combinations(concat_vectors(self.env.sectors.colonized, ts_sectors), count+1 if count else 0)
+        cdef vector[Py_ssize_t] sectors
+        concat_vectors(self.env.sectors.colonized, ts_sectors, sectors)
+        possibilities = combinations(sectors, count+1 if count else 0)
         groups = groupby(sorted(((c, sum(self.env.sectors.targets_count[s] if self.env.sectors.targets_count[s] else 1 for s in c)) for c in possibilities), key=lambda cw: cw[1], reverse=True), key=lambda cw: cw[1])
         for _, g in groups:
             g = list(g)
             for cw in g:
                 yield tuple(cw[0])
             return
-    
+
     def _run_consumers(self):
         cdef atomic_size_ptr tprogress
         cdef asize_pair_ptr cprogress
@@ -279,18 +296,18 @@ cdef class Compute:
                 while it < collectors.end():
                     q = dereference(it).first
                     l = dereference(it).second
-                    if l.try_lock_for(milliseconds(100)):
-                        for j in range(min(q.size(), 100)):
-                            sdo = q.front()
-                            if sdo.guard:
-                                collectors.erase(it)
-                                it = collectors.begin()
-                                break
-                            q.pop()
-                            with gil:
-                                solutions.put(make_solution(sdo))
-                        l.unlock()
-                        sleep_for(milliseconds(100))
+                    l.lock()
+                    for _ in range(min(q.size(), 1000)):
+                        sdo = q.front()
+                        if sdo.guard:
+                            collectors.erase(it)
+                            it = collectors.begin()
+                            break
+                        q.pop()
+                        with gil:
+                            solutions.put(make_solution(sdo))
+                    l.unlock()
+                    sleep_for(milliseconds(1000))
                     advance(it, 1)
             if self.threads_count and collectors.size() == 0:
                 return
@@ -310,19 +327,17 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
     top_scores.push_back(0.0)
 
     while True:
-        if lock_produced.try_lock_for(milliseconds(100)):
-            arg = produced.front()
-            if not arg.guard:
-                produced.pop()
-            lock_produced.unlock()
-            if arg.guard:
-                collector.second.lock()
-                sdo.guard = True
-                collector.first.push(sdo)
-                collector.second.unlock()
-                break
-        else:
-            continue
+        lock_produced.lock()
+        arg = produced.front()
+        if not arg.guard:
+            produced.pop()
+        lock_produced.unlock()
+        if arg.guard:
+            collector.second.lock()
+            sdo.guard = True
+            collector.first.push(sdo)
+            collector.second.unlock()
+            break
         neighbourhood = find_neighbours(env, arg)
         assignments = make_assignments(env, neighbourhood)
         cprogress.second.store(assignments.max)
@@ -330,21 +345,20 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
         assignments.step = <Py_ssize_t>(max(assignments.max/1000000, 1.0))
         assignment = next_product(assignments)
         while assignment.first:
-            score = evaluate(env, arg, neighbourhood, assignment.second)
+            score = evaluate(env, arg, neighbourhood, assignment.second, top_scores.back())
             if insort_double(top_scores, score):
                 sdo.score = score
                 sdo.ts_sectors = arg.ts_sectors
                 sdo.warps = arg.warps
                 sdo.assignment = assignment.second
                 sdo.guard = False
-                if collector.second.try_lock_for(milliseconds(100)):
-                    for buffered in buffer:
-                        collector.first.push(buffered)
-                    buffer.clear()
-                    collector.first.push(sdo)
-                    collector.second.unlock()
-                else:
-                    buffer.push_back(sdo)
+                buffer.push_back(sdo)
+                if buffer.size() > 10:
+                    if collector.second.try_lock_for(milliseconds(10)):
+                        for buffered in buffer:
+                            collector.first.push(buffered)
+                        buffer.clear()
+                        collector.second.unlock()
             assignment = next_product(assignments)
             cprogress.first.fetch_add(assignments.step)
         tprogress.fetch_add(1)
@@ -359,8 +373,8 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, vector[Py_ssize_t]& assignment) nogil noexcept:
-    cdef double score, score1, score2, score3, score4, score5, r, d, min_
+cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, vector[Py_ssize_t]& assignment, double worst) nogil noexcept:
+    cdef double score, score1, score2, score3, score4, score5, r, d, offlane_length
     cdef Py_ssize_t i, j, k, sid1, sid2
     cdef bint warped, valid
     cdef cpair[Py_ssize_t, Py_ssize_t] size_size_pair
@@ -368,7 +382,9 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     cdef cpair[Py_ssize_t, bint] size_bint_pair
     cdef vector[double] capacities_left
     cdef vector[Py_ssize_t] sectors
-    
+    cdef vector[Arrow] offlane_arrows
+    cdef vector[Py_ssize_t] arrows_order
+
     capacities_left = env.targets.capacities
     assignment_enumerated = enumerate_sizes(assignment)
     for size_size_pair in assignment_enumerated:
@@ -387,7 +403,6 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     score3 = 1
     score4 = 1
     score5 = 1
-    assignment_enumerated = enumerate_sizes(assignment)
     for size_size_pair in assignment_enumerated:
         sid1 = find_id(env.sectors.content, size_size_pair.first)
         sid2 = find_id(env.sectors.content, size_size_pair.second)
@@ -399,15 +414,23 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
                 score2 *= d if warped else 0.1 ** d
         score3 *= env.targets.likely_assign[size_size_pair.second]
         score4 *= 1 if in_vector(arg.warps, sid1) and in_vector(arg.warps, sid2) else 0.5
-    sectors = concat_vectors(env.sectors.colonized, arg.ts_sectors)
+    score = score1 * score2 * score3 * score4
+    if score < worst:
+        return 0
+    concat_vectors(env.sectors.colonized, arg.ts_sectors, sectors)
     for sid1 in sectors:
         if not in_vector(arg.warps, sid1):
-            min_ = 0
-            for sid2 in arg.warps:
-                d = 1.0/distance(env.sectors.center, sid1, sid2)
-                min_ = min(min_, d) if min_ > 0 else d
-            score5 *= min_
-    score = score1 * score2 * score3 * score4 * score5
+            score5 *= 1/arg.offlane_distances[sid1] if arg.offlane_distances[sid1] > 0 else 1
+    score *= score5
+    if score < worst:
+        return 0
+    find_offlane_arrows(env, arg, assignment, offlane_arrows)
+    arrows_order = crange(offlane_arrows.size())
+    offlane_length = -1
+    while next_permutation(arrows_order.begin(), arrows_order.end()):
+        d = compute_offlane_route(env, arg, offlane_arrows, arrows_order)
+        offlane_length = d if offlane_length == -1 else min(offlane_length, d)
+    score *= (1/offlane_length if offlane_length > 0 else 1)
     return score
 
 
@@ -453,7 +476,7 @@ cdef Neighbourhood find_neighbours(Env& env, ConsumerArgs& arg) nogil noexcept:
         size_vector_pair.second.clear()
         size_vector_pair.second.push_back(env.targets.stations[size_size_pair.first])
         content.insert(size_vector_pair)
-    sectors = concat_vectors(env.sectors.colonized, arg.ts_sectors)
+    concat_vectors(env.sectors.colonized, arg.ts_sectors, sectors)
     for sid in sectors:
         neighbours.clear()
         neighbours.insert(sid)
@@ -472,6 +495,46 @@ cdef Neighbourhood find_neighbours(Env& env, ConsumerArgs& arg) nogil noexcept:
                         result[cid].push_back(size_bint_pair)
     
     return result
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline vector[Arrow] find_offlane_arrows(Env& env, ConsumerArgs& arg, vector[Py_ssize_t]& assignment, vector[Arrow]& result) nogil noexcept:
+    cdef Arrow arrow
+    cdef vector[cpair[Py_ssize_t, Py_ssize_t]] enumerated
+    cdef cpair[Py_ssize_t, Py_ssize_t] pair
+    cdef Py_ssize_t sid1, sid2
+    
+    result.clear()
+    enumerated = enumerate_sizes(assignment)
+    for pair in enumerated:
+        sid1 = find_id(env.sectors.content, pair.first)
+        sid2 = find_id(env.sectors.content, pair.second)
+        if not in_vector(arg.warps, sid1) or not in_vector(arg.warps, sid2):
+            arrow.start = pair.second
+            arrow.end = pair.first
+            arrow.length = distance(env.sectors.center, pair.second, pair.first)/env.sectors.radius*2
+            result.push_back(arrow)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline double compute_offlane_route(Env& env, ConsumerArgs& arg, vector[Arrow]& offlane_arrows, vector[Py_ssize_t]& arrows_order) nogil noexcept:
+    cdef double dl, wl, length = 0
+    cdef Py_ssize_t i, n, prev
+
+    i = 0
+    n = arrows_order.size()
+    prev = offlane_arrows[arrows_order[0]].start
+
+    while i < n:
+        dl = distance(env.sectors.center, prev, offlane_arrows[arrows_order[i]].start)/env.sectors.radius*2
+        wl = arg.offlane_distances[prev] + 1 + arg.offlane_distances[offlane_arrows[arrows_order[i]].start]
+        length += min(dl, wl) + offlane_arrows[arrows_order[i]].length
+        prev = offlane_arrows[arrows_order[i]].end
+        i += 1
+
+    return length
 
 
 @cython.boundscheck(False)
@@ -536,14 +599,13 @@ cdef inline bint in_vector(vector[Py_ssize_t]& v, Py_ssize_t n) nogil noexcept:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline vector[Py_ssize_t] concat_vectors(vector[Py_ssize_t]& a, vector[Py_ssize_t]& b) nogil noexcept:
-    cdef vector[Py_ssize_t] result
-    result.reserve(a.size() + b.size())
+cdef inline void concat_vectors(vector[Py_ssize_t]& a, vector[Py_ssize_t]& b, vector[Py_ssize_t]& c) nogil noexcept:
+    c.clear()
+    c.reserve(a.size() + b.size())
     for i in a:
-        result.push_back(i)
+        c.push_back(i)
     for i in b:
-        result.push_back(i)
-    return result
+        c.push_back(i)
 
 
 @cython.boundscheck(False)
@@ -573,5 +635,17 @@ cdef inline vector[cpair[Py_ssize_t, double]] enumerate_doubles(vector[double]& 
         pair.first = i
         pair.second = k
         result.push_back(pair)
+        i += 1
+    return result
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline vector[Py_ssize_t] crange(Py_ssize_t n) nogil noexcept:
+    cdef vector[Py_ssize_t] result
+    cdef Py_ssize_t i = 0
+    result.reserve(n)
+    while i < n:
+        result.push_back(i)
         i += 1
     return result
