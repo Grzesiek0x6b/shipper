@@ -600,8 +600,8 @@ class App:
             orig_menu_btn_update()
             if self.computing is None:
                 return
-            for _ in range(10):
-                try:
+            try:
+                for _ in range(100):
                     solution = self.computing.solutions.get_nowait()
                     self.solution_number += 1
                     button = ui.ToogleButton(
@@ -611,15 +611,16 @@ class App:
                     button.highlight_tick = 30
                     button.changed = partial(toogle_button, btn=button, solution=solution)
                     insort_left(sorted_buttons, (solution.score, random(), self.solution_number, button))
-                    del sorted_buttons[:-10]
-                    scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
-                except Empty:
-                    if self.computing.task and not self.computing.task.is_alive():
-                        menu_btn.update = orig_menu_btn_update
-                        menu_btn.is_toogled = True
-                        progressbar.is_visible = False
-                        self.mode = "results"
-                    break
+                del sorted_buttons[:-10]
+                scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
+            except Empty:
+                del sorted_buttons[:-10]
+                scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
+                if self.computing.task and not self.computing.task.is_alive():
+                    menu_btn.update = orig_menu_btn_update
+                    menu_btn.is_toogled = True
+                    progressbar.is_visible = False
+                    self.mode = "results"
 
         menu_btn.update = menu_btn_update
 
