@@ -1,6 +1,7 @@
 # distutils: language = c++
 
 from libcpp.algorithm cimport lower_bound
+from libcpp.list cimport list as clist
 from libc.math cimport fabs as cabs, hypot
 from libcpp.map cimport map as cmap
 from libcpp.pair cimport pair as cpair
@@ -174,7 +175,7 @@ cdef class Compute:
     cdef atomic_size total_produced
     cdef vector[asize_pair_ptr] consumer_progresses
     cdef vector[atomic_size_ptr] total_consumed
-    cdef vector[collector_pt] collectors
+    cdef clist[collector_pt] collectors
 
     def __cinit__(self, app):
         self.solutions = Queue(100000)
@@ -283,33 +284,39 @@ cdef class Compute:
             consume(env, produced, lock_produced, collector, dereference(cprogress), dereference(tprogress))
 
     def _collect(self):
+        while self.threads_count == 0:
+            pass
         self._collect_impl(self.collectors, self.solutions)
 
     @cython.boundscheck(False)
     @cython.wraparound(False)
-    cdef void _collect_impl(self, vector[collector_pt]& collectors, object solutions) noexcept:
+    cdef void _collect_impl(self, clist[collector_pt]& collectors, object solutions) nogil noexcept:
         cdef collector_qt q
         cdef collector_lt l
+        cdef vector[SolutionDataObject] buffer
+
         while True:
-            with nogil:
-                it = collectors.begin()
-                while it < collectors.end():
-                    q = dereference(it).first
-                    l = dereference(it).second
-                    l.lock()
-                    for _ in range(min(q.size(), 1000)):
-                        sdo = q.front()
-                        if sdo.guard:
-                            collectors.erase(it)
-                            it = collectors.begin()
-                            break
-                        q.pop()
-                        with gil:
-                            solutions.put(make_solution(sdo))
-                    l.unlock()
-                    sleep_for(milliseconds(1000))
-                    advance(it, 1)
-            if self.threads_count and collectors.size() == 0:
+            it = collectors.begin()
+            while it != collectors.end():
+                q = dereference(it).first
+                l = dereference(it).second
+                l.lock()
+                buffer.reserve(min(q.size(), 1000))
+                for _ in range(min(q.size(), 1000)):
+                    sdo = q.front()
+                    if sdo.guard:
+                        it = collectors.erase(it)
+                        break
+                    q.pop()
+                    buffer.push_back(sdo)
+                l.unlock()
+                # sleep_for(milliseconds(1000))
+                with gil:
+                    for sdo in buffer:
+                        solutions.put(make_solution(sdo))
+                buffer.clear()
+                advance(it, 1)
+            if collectors.size() == 0:
                 return
 
 
@@ -345,7 +352,7 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
         assignments.step = <Py_ssize_t>(max(assignments.max/1000000, 1.0))
         assignment = next_product(assignments)
         while assignment.first:
-            score = evaluate(env, arg, neighbourhood, assignment.second, top_scores.back())
+            score = evaluate(env, arg, neighbourhood, assignment.second, (top_scores.back() if top_scores.size() == 10 else -1))
             if insort_double(top_scores, score):
                 sdo.score = score
                 sdo.ts_sectors = arg.ts_sectors
@@ -354,7 +361,7 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
                 sdo.guard = False
                 buffer.push_back(sdo)
                 if buffer.size() > 10:
-                    if collector.second.try_lock_for(milliseconds(10)):
+                    if collector.second.try_lock_for(milliseconds(100)):
                         for buffered in buffer:
                             collector.first.push(buffered)
                         buffer.clear()
@@ -533,6 +540,10 @@ cdef inline double compute_offlane_route(Env& env, ConsumerArgs& arg, vector[Arr
         length += min(dl, wl) + offlane_arrows[arrows_order[i]].length
         prev = offlane_arrows[arrows_order[i]].end
         i += 1
+    
+    dl = distance(env.sectors.center, prev, offlane_arrows[arrows_order[0]].start)/env.sectors.radius*2
+    wl = arg.offlane_distances[prev] + 1 + arg.offlane_distances[offlane_arrows[arrows_order[0]].start]
+    length += min(dl, wl)
 
     return length
 

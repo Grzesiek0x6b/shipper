@@ -9,24 +9,22 @@ from dataclasses import dataclass, field
 from operator import attrgetter
 from typing import Any, Tuple, List
 
-@dataclass
+
 class Element(ABC):
 
-    left: float = 0
-    top: float = 0
-    relative_left: float = None
-    relative_top: float = None
-    tag: Any = None
-    tooltip: Any = None
-    _tooltip: Any = field(init=False, repr=False)
-
-    @abstractmethod
-    def __post_init__(self):
+    def __init__(self, **kwargs):
+        self.left = kwargs.pop("left", 0)
+        self.top = kwargs.pop("top", 0)
+        self.width = kwargs.pop("width", 0)
+        self.height = kwargs.pop("height", 0)
+        self.relative_left = kwargs.pop("relative_left", None)
+        self.relative_top = kwargs.pop("relative_top", None)
+        self.tag = kwargs.pop("tag", None)
+        self.tooltip = kwargs.pop("tooltip", None)
         self.font = None
         self.is_mouse_over = False
         self.is_enabled = True
         self.is_visible = True
-        self._tooltip = None
 
     @abstractmethod
     def update(self):
@@ -48,6 +46,64 @@ class Element(ABC):
                 getattr(self, "_" + eventname, set()).remove(func)
             except KeyError:
                 pass
+    
+    @property
+    def left(self):
+        return getattr(self, "_left", 0)
+
+    @left.setter
+    def left(self, value):
+        changed = self.left != value
+        self._left = value
+        if changed:
+            self.shape_changed(None)
+    
+    @property
+    def top(self):
+        return getattr(self, "_top", 0)
+
+    @top.setter
+    def top(self, value):
+        changed = self.top != value
+        self._top = value
+        if changed:
+            self.shape_changed(None)
+    
+    @property
+    def width(self):
+        return getattr(self, "_width", 0)
+
+    @width.setter
+    def width(self, value):
+        changed = self.width != value
+        self._width = value
+        if changed:
+            self.shape_changed(None)
+    
+    @property
+    def height(self):
+        return getattr(self, "_height", 0)
+
+    @height.setter
+    def height(self, value):
+        changed = self.height != value
+        self._height = value
+        if changed:
+            self.shape_changed(None)
+    
+    @property
+    def shape_changed(self):
+        def handler(event):
+            for func in getattr(self, "_shape_changed", set()):
+                func(event)
+                # pass
+        return handler
+    
+    @shape_changed.setter
+    def shape_changed(self, func):
+        if not hasattr(self, "_shape_changed"):
+            self._shape_changed = set()
+        self._shape_changed.add(func)
     
     @property
     @abstractmethod
@@ -173,15 +229,12 @@ class Element(ABC):
         self._mouse_wheel.add(func)
 
 
-@dataclass
 class Background(Element):
     
-    width: float = 0
-    height: float = 0
-    color: Tuple[int, ...] = (0,0,0)
-
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        color = kwargs.pop("color", (0,0,0))
+        super().__init__(**kwargs)
+        self.color = color
     
     def update(self):
         pass
@@ -195,7 +248,7 @@ class Background(Element):
     @property
     def rect(self):
         return pygame.Rect(self.left, self.top, self.width, self.height)
-    
+
     @property
     def tooltip(self):
         return super().tooltip
@@ -204,19 +257,25 @@ class Background(Element):
     def tooltip(self, text):
         super(__class__, self.__class__).tooltip.__set__(self, text)
 
-@dataclass
+
 class BoldLine(Element):
 
-    x1: float = 0
-    y1: float = 0
-    x2: float = 0
-    y2: float = 0
-    color: Tuple[int, ...] = (0,0,0)
-    is_highlighted: bool = False
-    width: int = 3
-
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        x1 = kwargs.pop("x1", 0)
+        y1 = kwargs.pop("y1", 0)
+        x2 = kwargs.pop("x2", 0)
+        y2 = kwargs.pop("y2", 0)
+        color = kwargs.pop("color", (0,0,0))
+        is_highlighted = kwargs.pop("is_highlighted", False)
+        thickness = kwargs.pop("thickness", 3)
+        super().__init__(**kwargs)
+        self.x1 = x1
+        self.y1 = y1
+        self.x2 = x2
+        self.y2 = y2
+        self.color = color
+        self.is_highlighted = is_highlighted
+        self.thickness = thickness
         self.highlight_offset = 3
         self.max_highlight_ticks = 60
         self.highlight_tick = 0
@@ -244,7 +303,7 @@ class BoldLine(Element):
         return highlight(self.color, offset)
 
     def render(self, screen):
-        pygame.draw.line(screen, self.highlight_color, (self.x1, self.y1), (self.x2, self.y2), self.width)
+        pygame.draw.line(screen, self.highlight_color, (self.x1, self.y1), (self.x2, self.y2), self.thickness)
 
     def hittest(self, position):
         x, y = position
@@ -270,8 +329,8 @@ class LineWithDots(BoldLine):
 
     def render(self, screen):
         super().render(screen)
-        pygame.draw.circle(screen, self.highlight_color, (self.x1, self.y1), self.width * 1.5)
-        pygame.draw.circle(screen, self.highlight_color, (self.x2, self.y2), self.width * 1.5)
+        pygame.draw.circle(screen, self.highlight_color, (self.x1, self.y1), self.thickness * 1.5)
+        pygame.draw.circle(screen, self.highlight_color, (self.x2, self.y2), self.thickness * 1.5)
 
 
 class Arrow(BoldLine):
@@ -284,21 +343,21 @@ class Arrow(BoldLine):
         rotation = (math.atan2(self.y1 - self.y2, self.x1 - self.x2)) + math.pi
         triangle = [0, (3 * math.pi / 4), (5 * math.pi / 4)]
         for t in triangle:
-            x = self.x2 + self.width * 2 * math.cos(t + rotation)
-            y = self.y2 + self.width * 2 * math.sin(t + rotation)
+            x = self.x2 + self.thickness * 2 * math.cos(t + rotation)
+            y = self.y2 + self.thickness * 2 * math.sin(t + rotation)
             yield x, y
 
-@dataclass
-class Label(Element):
-    
-    width: float = 0
-    height: float = 0
-    foreground: Tuple[int, ...] = (255,255,255)
-    background: Tuple[int, ...] = None
-    text: str = ""
 
-    def __post_init__(self):
-        super().__post_init__()
+class Label(Element):
+
+    def __init__(self, **kwargs):
+        foreground = kwargs.pop("foreground", (255,255,255))
+        background = kwargs.pop("background", None)
+        text = kwargs.pop("text", "")
+        super().__init__(**kwargs)
+        self.foreground = foreground
+        self.background = background
+        self.text = text
     
     def update(self):
         pass
@@ -345,20 +404,25 @@ def highlight(color, offset):
     return tuple(brighten(x, offset) for x in color)
 
 
-@dataclass
 class ButtonBase(Element):
 
-    foreground: Tuple[int, ...] = (255,255,255)
-    background: Tuple[int, ...] = (0,0,0)
-    border: Tuple[int, ...] = (255,255,255)
-    text: str = ""
-
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        foreground = kwargs.pop("foreground", (255,255,255))
+        background = kwargs.pop("background", (0,0,0))
+        border = kwargs.pop("border", (255,255,255))
+        text = kwargs.pop("text", "")
+        super().__init__(**kwargs)
+        self.foreground = foreground
+        self.background = background
+        self.border = border
+        self.text = text
         self.highlight_offset = 3
         self.max_highlight_ticks = 15
         self.highlight_tick = 0
         self.mouse_over = self._on_mouse_over
+    
+    def __post_init__(self):
+        return super().__post_init__()
     
     def update(self):
         if not self.is_mouse_over and self.highlight_tick > 0:
@@ -371,7 +435,7 @@ class ButtonBase(Element):
     
     def _on_mouse_over(self, event):
         self.highlight_tick = self.max_highlight_ticks
-
+    
     @property
     def tooltip(self):
         return super().tooltip
@@ -381,14 +445,10 @@ class ButtonBase(Element):
         super(__class__, self.__class__).tooltip.__set__(self, text)
 
 
-@dataclass
 class Button(ButtonBase):
-
-    width: float = 0
-    height: float = 0
     
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def render(self, screen):
         pygame.draw.rect(screen, self.highlight_background, self.rect)
@@ -408,18 +468,17 @@ class Button(ButtonBase):
         return pygame.Rect(self.left, self.top, self.width, self.height)
 
 
-@dataclass
 class ToogleButton(ButtonBase):
-
-    width: float = 0
-    height: float = 0
-    active_background: Tuple[int, ...] = (0,0,0)
-    display_checkmark: bool = True
     
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        active_background = kwargs.pop("active_background", (0,0,0))
+        display_checkmark = kwargs.pop("display_checkmark", True)
+        super().__init__(**kwargs)
+        self.active_background = active_background
+        self.display_checkmark = display_checkmark
         self._is_toogled = False
         self.mouse_button_down = self._switch
+    
 
     def render(self, screen):
         pygame.draw.rect(screen, self.active_background if self._is_toogled else self.highlight_background, self.rect)
@@ -471,13 +530,12 @@ class ToogleButton(ButtonBase):
         return pygame.Rect(self.left, self.top, self.width, self.height)
 
 
-@dataclass
 class HexButton(ButtonBase):
 
-    radius: float = 0
-    
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        radius = kwargs.pop("radius", 0)
+        super().__init__(**kwargs)
+        self.radius = radius
         self.vertices = self.compute_vertices()
 
     def compute_vertices(self):
@@ -511,6 +569,15 @@ class HexButton(ButtonBase):
 
     def hittest(self, position):
         return math.dist(position, self.center) < self.minimal_radius
+        
+    @property
+    def radius(self):
+        return getattr(self, "_radius", 0)
+
+    @radius.setter
+    def radius(self, value):
+        self._radius = value
+        self.shape_changed(None)
 
 
 class EventHandler:
@@ -558,15 +625,18 @@ class EventHandler:
         pass
 
 
-@dataclass
 class Panel(Element, EventHandler):
 
-    foreground: Tuple[int, ...] = (255,255,255)
-    background: Tuple[int, ...] = (0,0,0)
-    border: Tuple[int, ...] = (255,255,255)
-    
-    def __post_init__(self):
-        super().__post_init__()
+    def __init__(self, **kwargs):
+        foreground = kwargs.pop("foreground", (255,255,255))
+        background = kwargs.pop("background", (0,0,0))
+        border = kwargs.pop("border", (255,255,255))
+        super().__init__(**kwargs)
+        self.foreground = foreground
+        self.background = background
+        self.border = border
+        self.top_panel = self
+        self.shape_changed = self.organize
 
     @property
     def elements(self):
@@ -574,27 +644,47 @@ class Panel(Element, EventHandler):
             self._elements = []
         return self._elements
 
-    def add(self, element):
+    def add(self, element, redraw=True):
         element.font = self.font
-        element.visibility_changed = lambda _: self._organize()
+        element.unregister("visibility_changed", func=self.top_panel.organize)
+        element.visibility_changed = self.top_panel.organize
+        element.unregister("shape_changed", func=self.top_panel.organize)
+        element.shape_changed = self.top_panel.organize
+        if isinstance(element, Panel):
+            element.top_panel = self.top_panel
+            element.unregister("shape_changed", func=element.organize)
         self.elements.append(element)
-        self._organize()
+        if redraw:
+            self.shape_changed(None)
 
-    def add_range(self, elements):
+    def add_range(self, elements, redraw=True):
         for element in elements:
             element.font = self.font
-            element.visibility_changed = lambda _: self._organize()
+            element.unregister("visibility_changed", func=self.top_panel.organize)
+            element.visibility_changed = self.top_panel.organize
+            element.unregister("shape_changed", func=self.top_panel.organize)
+            element.shape_changed = self.top_panel.organize
+            if isinstance(element, Panel):
+                element.top_panel = self.top_panel
+                element.unregister("shape_changed", func=element.organize)
             self.elements.append(element)
-        self._organize()
+        if redraw:
+            self.shape_changed(None)
 
-    def remove(self, element):
+    def remove(self, element, redraw=True):
         self.elements.remove(element)
-        self._organize()
+        if redraw:
+            self.shape_changed(None)
 
-    def clear(self):
+    def clear(self, redraw=True):
         self.elements.clear()
-        self._organize()
+        if redraw:
+            self.shape_changed(None)
     
+    def replace(self, elements, redraw=True):
+        self.clear(False)
+        self.add_range(elements, redraw)
+
     @property
     def font(self):
         return getattr(self, "_font", None)
@@ -629,17 +719,20 @@ class Panel(Element, EventHandler):
         return False
     
     @abstractmethod
-    def _organize(self):
+    def organize(self, event=None):
         pass
 
 
-@dataclass
 class StackPanel(Panel):
 
-    spacing: float = 0
-    vertical: bool = True
+    def __init__(self, **kwargs):
+        spacing = kwargs.pop("spacing", 0)
+        vertical = kwargs.pop("vertical", True)
+        super().__init__(**kwargs)
+        self.spacing = spacing
+        self.vertical = vertical
 
-    def _organize(self):
+    def organize(self, event=None):
         if len(self.elements) == 0:
             self.height = self.width = 0
             return
@@ -648,20 +741,20 @@ class StackPanel(Panel):
             if not element.is_visible:
                 return top
             top += element.relative_top if element.relative_top else 0
-            element.top = top
-            element.left = self.left + (element.relative_left if element.relative_left else 0)
+            element._top = top
+            element._left = self.left + (element.relative_left if element.relative_left else 0)
             if isinstance(element, Panel):
-                element._organize()
+                element.organize(event)
             return top + element.height + self.spacing
 
         def stack_horizontally(left, element):
             if not element.is_visible:
                 return left
             left += element.relative_left if element.relative_left else 0
-            element.left = left
-            element.top = self.top + (element.relative_top if element.relative_top else 0)
+            element._left = left
+            element._top = self.top + (element.relative_top if element.relative_top else 0)
             if isinstance(element, Panel):
-                element._organize()
+                element.organize(event)
             return left + element.width + self.spacing
              
         list(accumulate(
@@ -671,12 +764,11 @@ class StackPanel(Panel):
         
         last = self.elements[-1] if self.elements else None
         if self.vertical:
-            self.width = max(element.width for element in self.elements)
-            self.height = last.top + last.height - self.top if last else 0
+            self._width = max(element.width for element in self.elements)
+            self._height = last.top + last.height - self.top if last else 0
         else:
-            self.width = last.left + last.width - self.left if last else 0
-            self.height = max(element.height for element in self.elements)
-
+            self._width = last.left + last.width - self.left if last else 0
+            self._height = max(element.height for element in self.elements)
 
 
 class Manager(EventHandler):

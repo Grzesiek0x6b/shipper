@@ -612,8 +612,7 @@ class App:
                     button.changed = partial(toogle_button, btn=button, solution=solution)
                     insort_left(sorted_buttons, (solution.score, random(), self.solution_number, button))
                     del sorted_buttons[:-10]
-                    scores_panel.clear()
-                    scores_panel.add_range(reversed([sb[3] for sb in sorted_buttons]))
+                    scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
                 except Empty:
                     if self.computing.task and not self.computing.task.is_alive():
                         menu_btn.update = orig_menu_btn_update
@@ -624,7 +623,7 @@ class App:
 
         menu_btn.update = menu_btn_update
 
-        return (progressbar, show_all_arrows_btn, scores_label, scores_panel)
+        return (progressbar, scores_label, scores_panel, show_all_arrows_btn)
 
     def toogle_sector(self, sector):
         if self.mode == "reveal":
