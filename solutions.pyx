@@ -432,12 +432,15 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     if score < worst:
         return 0
     find_offlane_arrows(env, arg, assignment, offlane_arrows)
-    arrows_order = crange(offlane_arrows.size())
-    offlane_length = -1
-    while next_permutation(arrows_order.begin(), arrows_order.end()):
-        d = compute_offlane_route(env, arg, offlane_arrows, arrows_order)
-        offlane_length = d if offlane_length == -1 else min(offlane_length, d)
-    score *= (1/offlane_length if offlane_length > 0 else 1)
+    if offlane_arrows.size() > 1:
+        arrows_order = crange(offlane_arrows.size())
+        offlane_length = -1
+        while True:
+            d = compute_offlane_route(env, arg, offlane_arrows, arrows_order)
+            offlane_length = d if offlane_length == -1 else min(offlane_length, d)
+            if not next_permutation(arrows_order.begin(), arrows_order.end()):
+                break
+        score *= (1/offlane_length if offlane_length > 0 else 1)
     return score
 
 
