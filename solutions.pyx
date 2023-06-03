@@ -70,6 +70,17 @@ cdef bint insort_double(vector[double]& vec, double value) nogil noexcept:
     return result
 
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef vector[bint] select(Py_ssize_t n, Py_ssize_t k) nogil noexcept:
+    cdef vector[bint] result
+    cdef Py_ssize_t i = k
+    result.assign(n-k, False)
+    while i < n:
+        result.push_back(True)
+        i += 1
+    return result
+
 cdef enum SectorType:
     star, hidden, empty, planets, station
 
@@ -237,7 +248,11 @@ cdef class Compute:
                 arg = ConsumerArgs(ts_sectors, warps, distances, False)
                 self.lock_produced.lock()
                 self.produced.push(arg)
+                size = self.produced.size()
                 self.lock_produced.unlock()
+                if size > 100:
+                    with nogil:
+                        sleep_for(milliseconds(10000))
                 self.total_produced.fetch_add(1)
         self.lock_produced.lock()
         self.produced.push(ConsumerArgs([], [], [], True))
@@ -262,13 +277,14 @@ cdef class Compute:
             for cw in g:
                 yield tuple(cw[0])
             return
+        # yield from possibilities
 
     def _run_consumers(self):
         cdef atomic_size_ptr tprogress
         cdef asize_pair_ptr cprogress
         cdef collector_pt collector
         env = self.env
-        produced = self.produced
+        produced = &self.produced
         lock_produced = &self.lock_produced
         with cython.nogil, parallel():
             cprogress = new cpair[atomic_size, atomic_size]()
@@ -291,8 +307,7 @@ cdef class Compute:
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexcept:
-    cdef collector_qt q
-    cdef collector_lt l
+    cdef collector_pt collector
     cdef vector[SolutionDataObject] buffer
 
     buffer.reserve(4000)
@@ -300,17 +315,16 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
     while True:
         it = collectors.begin()
         while it != collectors.end():
-            q = dereference(it).first
-            l = dereference(it).second
-            l.lock()
-            for _ in range(min(q.size(), 1000)):
-                sdo = q.front()
+            collector = dereference(it)
+            collector.second.lock()
+            for _ in range(min(collector.first.size(), 1000)):
+                sdo = collector.first.front()
                 if sdo.guard:
                         it = collectors.erase(it)
                         break
-                q.pop()
+                collector.first.pop()
                 buffer.push_back(sdo)
-            l.unlock()
+            collector.second.unlock()
             # sleep_for(milliseconds(1000))
             advance(it, 1)
         with gil:
@@ -323,10 +337,9 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_produced, collector_pt collector, cpair[atomic_size, atomic_size]& cprogress, atomic_size& tprogress) nogil noexcept:
+cdef void consume(Env& env, cqueue[ConsumerArgs]* produced, timed_mutex* lock_produced, collector_pt collector, cpair[atomic_size, atomic_size]& cprogress, atomic_size& tprogress) nogil noexcept:
     cdef Neighbourhood neighbourhood
     cdef ConsumerArgs arg
-    cdef cpair[bint, vector[Py_ssize_t]] assignment
     cdef double score
     cdef vector[double] top_scores
     cdef SolutionDataObject sdo
@@ -336,6 +349,10 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
 
     while True:
         lock_produced.lock()
+        while produced.empty():
+            lock_produced.unlock()
+            sleep_for(milliseconds(1000))
+            lock_produced.lock()
         arg = produced.front()
         if not arg.guard:
             produced.pop()
@@ -351,17 +368,15 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
         cprogress.second.store(assignments.max)
         cprogress.first.store(0)
         assignments.step = <Py_ssize_t>(max(assignments.max/1000000, 1.0))
-        assignment = next_product(assignments)
-        while assignment.first:
-            score = evaluate(env, arg, neighbourhood, assignment.second, (top_scores.back() if top_scores.size() == 10 else -1))
+        while next_product(assignments):
+            score = evaluate(env, arg, neighbourhood, assignments.result, (top_scores.back() if top_scores.size() == 10 else -1))
             if insort_double(top_scores, score):
                 sdo.score = score
                 sdo.ts_sectors = arg.ts_sectors
                 sdo.warps = arg.warps
-                sdo.assignment = assignment.second
+                sdo.assignment = assignments.result
                 sdo.guard = False
                 buffer.push_back(sdo)
-            assignment = next_product(assignments)
             cprogress.first.fetch_add(assignments.step)
         collector.second.lock()
         for buffered in buffer:
@@ -563,6 +578,7 @@ cdef inline Py_ssize_t find_id(vector[vector[Py_ssize_t]]& contents, Py_ssize_t 
 
 cdef struct Product:
     vector[vector[Py_ssize_t]] it
+    vector[Py_ssize_t] result
     Py_ssize_t n
     Py_ssize_t step
     Py_ssize_t curr
@@ -581,23 +597,26 @@ cdef inline Product product(vector[vector[Py_ssize_t]]& it, Py_ssize_t step=1) n
     prod.step = step
     prod.curr = 0
     prod.max = m
+    prod.result.assign(prod.n, 0)
     return prod
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline cpair[bint, vector[Py_ssize_t]] next_product(Product& prod) nogil noexcept:
-    cdef cpair[bint, vector[Py_ssize_t]] result
+cdef inline bint next_product(Product& prod) nogil noexcept:
+    cdef bint result
     cdef vector[Py_ssize_t] l
-    cdef Py_ssize_t j
+    cdef Py_ssize_t j, i
     
+    result = False
     if prod.curr < prod.max:
-        result.second.reserve(prod.n)
         j = prod.curr
+        i = 0
         for l in prod.it:
-            result.second.push_back(l[j % l.size()])
+            prod.result[i] = l[j % l.size()]
             j //= l.size()
-        result.first = not (j > 0)
+            i += 1
+        result = not (j > 0)
         prod.curr += prod.step
     return result
 
