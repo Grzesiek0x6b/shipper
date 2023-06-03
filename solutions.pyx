@@ -286,38 +286,39 @@ cdef class Compute:
     def _collect(self):
         while self.threads_count == 0:
             pass
-        self._collect_impl(self.collectors, self.solutions)
+        collect(self.collectors, self.solutions)
 
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    cdef void _collect_impl(self, clist[collector_pt]& collectors, object solutions) nogil noexcept:
-        cdef collector_qt q
-        cdef collector_lt l
-        cdef vector[SolutionDataObject] buffer
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexcept:
+    cdef collector_qt q
+    cdef collector_lt l
+    cdef vector[SolutionDataObject] buffer
 
-        while True:
-            it = collectors.begin()
-            while it != collectors.end():
-                q = dereference(it).first
-                l = dereference(it).second
-                l.lock()
-                buffer.reserve(min(q.size(), 1000))
-                for _ in range(min(q.size(), 1000)):
-                    sdo = q.front()
-                    if sdo.guard:
-                        it = collectors.erase(it)
-                        break
-                    q.pop()
-                    buffer.push_back(sdo)
-                l.unlock()
-                # sleep_for(milliseconds(1000))
-                with gil:
-                    for sdo in buffer:
-                        solutions.put(make_solution(sdo))
-                buffer.clear()
-                advance(it, 1)
-            if collectors.size() == 0:
-                return
+    buffer.reserve(4000)
+
+    while True:
+        it = collectors.begin()
+        while it != collectors.end():
+            q = dereference(it).first
+            l = dereference(it).second
+            l.lock()
+            for _ in range(min(q.size(), 1000)):
+                sdo = q.front()
+                if sdo.guard:
+                    it = collectors.erase(it)
+                    break
+                q.pop()
+                buffer.push_back(sdo)
+            l.unlock()
+            # sleep_for(milliseconds(1000))
+            advance(it, 1)
+        with gil:
+            for sdo in buffer:
+                solutions.put(make_solution(sdo))
+        buffer.clear()
+        if collectors.size() == 0:
+            return
 
 
 @cython.boundscheck(False)
@@ -432,12 +433,15 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     if score < worst:
         return 0
     find_offlane_arrows(env, arg, assignment, offlane_arrows)
-    arrows_order = crange(offlane_arrows.size())
-    offlane_length = -1
-    while next_permutation(arrows_order.begin(), arrows_order.end()):
-        d = compute_offlane_route(env, arg, offlane_arrows, arrows_order)
-        offlane_length = d if offlane_length == -1 else min(offlane_length, d)
-    score *= (1/offlane_length if offlane_length > 0 else 1)
+    if offlane_arrows.size() > 1:
+        arrows_order = crange(offlane_arrows.size())
+        offlane_length = -1
+        while True:
+            d = compute_offlane_route(env, arg, offlane_arrows, arrows_order)
+            offlane_length = d if offlane_length == -1 else min(offlane_length, d)
+            if not next_permutation(arrows_order.begin(), arrows_order.end()):
+                break
+        score *= (1/offlane_length if offlane_length > 0 else 1)
     return score
 
 
