@@ -306,8 +306,8 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
             for _ in range(min(q.size(), 1000)):
                 sdo = q.front()
                 if sdo.guard:
-                    it = collectors.erase(it)
-                    break
+                        it = collectors.erase(it)
+                        break
                 q.pop()
                 buffer.push_back(sdo)
             l.unlock()
@@ -361,14 +361,13 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]& produced, timed_mutex* lock_pr
                 sdo.assignment = assignment.second
                 sdo.guard = False
                 buffer.push_back(sdo)
-                if buffer.size() > 10:
-                    if collector.second.try_lock_for(milliseconds(100)):
-                        for buffered in buffer:
-                            collector.first.push(buffered)
-                        buffer.clear()
-                        collector.second.unlock()
             assignment = next_product(assignments)
             cprogress.first.fetch_add(assignments.step)
+        collector.second.lock()
+        for buffered in buffer:
+            collector.first.push(buffered)
+        buffer.clear()
+        collector.second.unlock()
         tprogress.fetch_add(1)
     collector.second.lock()
     for buffered in buffer:
