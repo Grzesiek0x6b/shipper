@@ -183,14 +183,14 @@ cdef class Compute:
     cdef cqueue[ConsumerArgs] produced
     cdef timed_mutex lock_produced
     cdef Env env
-    cdef atomic_size total_produced
+    cdef int total_produced
     cdef vector[asize_pair_ptr] consumer_progresses
     cdef vector[atomic_size_ptr] total_consumed
     cdef clist[collector_pt] collectors
 
     def __cinit__(self, app):
         self.solutions = Queue(100000)
-        self.total_produced.store(0)
+        self.total_produced = 0
 
         self.make_env(app)
 
@@ -200,9 +200,8 @@ cdef class Compute:
         self.task.start()
 
     def progress(self):
-        produced = self.total_produced.load()
         consumed = sum(c.load() for c in self.total_consumed)
-        return consumed/produced if produced > 0 else 0
+        return consumed/self.total_produced if self.total_produced > 0 else 0
     
     def subprogresses(self) -> vector[cpair[int, int]]:
         return [(dereference(p).first.load(), dereference(p).second.load()) for p in self.consumer_progresses]
@@ -237,8 +236,15 @@ cdef class Compute:
         self.env.targets.likely_assign = [obj.likely_assign for obj in self.targets]
 
     def _produce(self):
+        warps_count = min(len(self.env.sectors.colonized)+len(self.env.targets.stations)-1, self.env.warps_count) + 1 if self.env.warps_count else 0
+        self.total_produced = 1
+        self.total_produced *= math.comb(self.env.sectors.empty.size(), self.env.targets.stations.size()) if not self.env.targets.stations.empty() else 1
+        n = 0
+        for s in self.env.sectors.colonized:
+            if self.env.sectors.targets_count[s] > 1:
+                n += 1
+        self.total_produced *= math.comb(self.env.sectors.colonized.size() - min(n, warps_count) + self.env.targets.stations.size(), warps_count)
         for ts_sectors in self.ts_selection():
-            warps_count = min(len(self.env.sectors.colonized)+len(ts_sectors)-1, self.env.warps_count)
             for warps in self.warps_selection(ts_sectors, warps_count):
                 sectors = list(self.env.sectors.colonized) + list(ts_sectors)
                 distances = [0.0] * len(self.env.sectors.type)
@@ -253,7 +259,6 @@ cdef class Compute:
                 if size > 100:
                     with nogil:
                         sleep_for(milliseconds(10000))
-                self.total_produced.fetch_add(1)
         self.lock_produced.lock()
         self.produced.push(ConsumerArgs([], [], [], True))
         self.lock_produced.unlock()
@@ -270,7 +275,7 @@ cdef class Compute:
     def warps_selection(self, ts_sectors, count):
         cdef vector[Py_ssize_t] sectors
         concat_vectors(self.env.sectors.colonized, ts_sectors, sectors)
-        possibilities = combinations(sectors, count+1 if count else 0)
+        possibilities = combinations(sectors, count)
         groups = groupby(sorted(((c, sum(self.env.sectors.targets_count[s] if self.env.sectors.targets_count[s] else 1 for s in c)) for c in possibilities), key=lambda cw: cw[1], reverse=True), key=lambda cw: cw[1])
         for _, g in groups:
             g = list(g)

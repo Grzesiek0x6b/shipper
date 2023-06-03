@@ -500,26 +500,22 @@ class App:
     
     def init_results_panel(self, menu_btn):
         orig_menu_btn_update = menu_btn.update
-
-        def update_total_progress(bar, max_width):
-            if self.computing:
-                bar.width = min(self.computing.progress() * max_width, max_width)
-
-        def update_consumer_progress(bar, i, max_width):
-            if self.computing:
-                ps = self.computing.subprogresses()
-                if len(ps) > i:
-                    p = ps[i]
-                    bar.width = min((p[0]/p[1]) * max_width, max_width) if p[1] else 0
-
         progressbar = ui.StackPanel(spacing=0, relative_top=-20)
+
+        def update_progress(total, max_width):
+            if self.computing:
+                bars = [total]
+                total.width = min(self.computing.progress() * max_width, max_width)
+                ps = self.computing.subprogresses()
+                for curr, max_ in ps:
+                    bar = ui.Background(color=(70,100,255), height=5)
+                    bar.width = min((curr/max_) * max_width, max_width) if max_ else 0
+                    bars.append(bar)
+                progressbar.replace(bars)
+
         total = ui.Background(color=(70,255,100), height=5)
-        total.update = partial(update_total_progress, bar=total, max_width=200)
+        total.update = partial(update_progress, total=total, max_width=200)
         progressbar.add(total)
-        for i in range(4):
-            bar = ui.Background(color=(70,100,255), height=5)
-            bar.update = partial(update_consumer_progress, bar=bar, i=i, max_width=200)
-            progressbar.add(bar)
 
         scores_label = ui.Label(text="Top 10 solutions:", width=200, height=30)
         scores_panel = ui.StackPanel(relative_top=0, spacing=5)
