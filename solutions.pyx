@@ -349,6 +349,8 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
                     solutions.put_nowait(make_solution(sdo))
                     buffer.pop_back()
                 except Full:
+                    with nogil:
+                        sleep_for(milliseconds(10000))
                     break
         if collectors.size() == 0:
             break
