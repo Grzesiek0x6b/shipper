@@ -592,7 +592,6 @@ class App:
 
 
         def menu_btn_update():
-            global solution_number
             orig_menu_btn_update()
             if self.computing is None:
                 return
@@ -610,8 +609,9 @@ class App:
                 del sorted_buttons[:-10]
                 scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
             except Empty:
-                del sorted_buttons[:-10]
-                scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
+                if len(sorted_buttons) > 10:
+                    del sorted_buttons[:-10]
+                    scores_panel.replace(reversed([sb[3] for sb in sorted_buttons]))
                 if self.computing.task and not self.computing.task.is_alive():
                     menu_btn.update = orig_menu_btn_update
                     menu_btn.is_toogled = True

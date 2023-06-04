@@ -8,6 +8,7 @@ from libcpp.pair cimport pair as cpair
 from libcpp.deque cimport deque
 from libcpp.set cimport set as cset
 from libcpp.vector cimport vector
+from libc.stdio cimport printf
 
 from collections import defaultdict
 import cython
@@ -16,7 +17,7 @@ from cython.parallel import parallel
 from itertools import combinations, groupby
 import math
 from multiprocessing import Queue
-from queue import Empty
+from queue import Empty, Full
 from threading import Thread
 
 cdef extern from "<algorithm>" namespace "std" nogil:
@@ -150,7 +151,7 @@ cdef struct SolutionDataObject:
 
 
 class Solution:
-    score: float
+    score: double
     ts_sectors: list
     warps: list
     directions: dict
@@ -195,7 +196,7 @@ cdef class Compute:
     cdef clist[collector_pt] collectors
 
     def __cinit__(self, app):
-        self.solutions = Queue()
+        self.solutions = Queue(1000)
         self.total_produced = 0
 
         self.make_env(app)
@@ -261,6 +262,7 @@ cdef class Compute:
                 arg = ConsumerArgs(ts_sectors, warps, distances, False)
                 self.lock_produced.lock()
                 self.produced.push_back(arg)
+                printf("p")
                 size = self.produced.size()
                 self.lock_produced.unlock()
                 if size > 100:
@@ -320,27 +322,37 @@ cdef class Compute:
 cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexcept:
     cdef collector_pt collector
     cdef vector[SolutionDataObject] buffer
+    cdef vector[double] top_scores
 
-    buffer.reserve(4000)
+    buffer.reserve(10000)
+    top_scores.push_back(0.0)
 
     while True:
         it = collectors.begin()
         while it != collectors.end():
             collector = dereference(it)
             collector.second.lock()
-            for _ in range(collector.first.size()):
+            for _ in range(min(collector.first.size(), 1000)):
                 sdo = collector.first.front()
                 if sdo.guard:
                         it = collectors.erase(it)
                         break
                 collector.first.pop_front()
-                buffer.push_back(sdo)
+                if insort_double(top_scores, sdo.score):
+                    buffer.push_back(sdo)
             collector.second.unlock()
             advance(it, 1)
-        with gil:
-            for sdo in buffer:
-                solutions.put_nowait(make_solution(sdo))
-        buffer.clear()
+        while True:
+            if buffer.empty():
+                break
+            sdo = buffer.back()
+            with gil:
+                try:
+                    solutions.put_nowait(make_solution(sdo))
+                    buffer.pop_back()
+                except Full:
+                    with nogil:
+                        sleep_for(milliseconds(5000))
         if collectors.size() == 0:
             return
 
@@ -361,9 +373,11 @@ cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_pro
         lock_produced.lock()
         while produced.empty():
             lock_produced.unlock()
+            printf("n")
             sleep_for(milliseconds(1000))
             lock_produced.lock()
         arg = produced.front()
+        printf("c")
         if not arg.guard:
             produced.pop_front()
         lock_produced.unlock()
@@ -417,7 +431,7 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     cdef sizes_t sectors
     cdef vector[Arrow] offlane_arrows
     cdef sizes_t arrows_order
-
+    
     capacities_left = env.targets.capacities
     assignment_enumerated = enumerate_sizes(assignment)
     for size_size_pair in assignment_enumerated:
