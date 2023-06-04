@@ -597,7 +597,7 @@ class App:
             if self.computing is None:
                 return
             try:
-                for _ in range(10):
+                for _ in range(100):
                     solution = self.computing.solutions.get_nowait()
                     self.solution_number += 1
                     button = ui.ToogleButton(

@@ -5,7 +5,7 @@ from libcpp.list cimport list as clist
 from libc.math cimport fabs as cabs, hypot
 from libcpp.map cimport map as cmap
 from libcpp.pair cimport pair as cpair
-from libcpp.queue cimport queue as cqueue
+from libcpp.deque cimport deque
 from libcpp.set cimport set as cset
 from libcpp.vector cimport vector
 
@@ -81,14 +81,20 @@ cdef vector[bint] select(Py_ssize_t n, Py_ssize_t k) nogil noexcept:
         i += 1
     return result
 
+
+ctypedef vector[Py_ssize_t] sizes_t
+ctypedef cmap[Py_ssize_t, sizes_t] sizes_mapping_t
+ctypedef cpair[Py_ssize_t, sizes_t] sizes_mapping_element_t
+
+
 cdef enum SectorType:
     star, hidden, empty, planets, station
 
 cdef struct EnvSectors:
     double radius
-    vector[Py_ssize_t] empty
-    vector[Py_ssize_t] colonized
-    vector[vector[Py_ssize_t]] content
+    sizes_t empty
+    sizes_t colonized
+    vector[sizes_t] content
     vector[SectorType] type
     vector[int] targets_count
     vector[cpair[double, double]] center
@@ -113,7 +119,7 @@ cdef inline bint is_adjacent(vector[cpair[double, double]]& center, Py_ssize_t i
 
 
 cdef struct EnvTargets:
-    vector[Py_ssize_t] stations
+    sizes_t stations
     vector[double] capacities
     vector[int] targets
     vector[bint] storages
@@ -129,17 +135,17 @@ ctypedef vector[double] distances_t
 
 
 cdef struct ConsumerArgs:
-    vector[Py_ssize_t] ts_sectors
-    vector[Py_ssize_t] warps
+    sizes_t ts_sectors
+    sizes_t warps
     distances_t offlane_distances
     bint guard
 
 
 cdef struct SolutionDataObject:
     double score
-    vector[Py_ssize_t] ts_sectors
-    vector[Py_ssize_t] warps
-    vector[Py_ssize_t] assignment
+    sizes_t ts_sectors
+    sizes_t warps
+    sizes_t assignment
     bint guard
 
 
@@ -170,7 +176,7 @@ cdef struct Arrow:
 
 ctypedef cpair[atomic_size, atomic_size]* asize_pair_ptr
 
-ctypedef cqueue[SolutionDataObject]* collector_qt
+ctypedef deque[SolutionDataObject]* collector_qt
 ctypedef timed_mutex* collector_lt
 ctypedef cpair[collector_qt, collector_lt] collector_pt
 
@@ -180,7 +186,7 @@ cdef class Compute:
     cdef public object solutions
     cdef public list sectors
     cdef public list targets
-    cdef cqueue[ConsumerArgs] produced
+    cdef deque[ConsumerArgs] produced
     cdef timed_mutex lock_produced
     cdef Env env
     cdef int total_produced
@@ -189,7 +195,7 @@ cdef class Compute:
     cdef clist[collector_pt] collectors
 
     def __cinit__(self, app):
-        self.solutions = Queue(100000)
+        self.solutions = Queue()
         self.total_produced = 0
 
         self.make_env(app)
@@ -248,19 +254,20 @@ cdef class Compute:
             for warps in self.warps_selection(ts_sectors, warps_count):
                 sectors = list(self.env.sectors.colonized) + list(ts_sectors)
                 distances = [0.0] * len(self.env.sectors.type)
-                for sid1 in sectors:
-                    if sid1 not in warps:
-                        distances[sid1] = min(distance(self.env.sectors.center, sid1, sid2) / (self.env.sectors.radius * 2) for sid2 in warps)
+                if len(warps):
+                    for sid1 in sectors:
+                        if sid1 not in warps:
+                            distances[sid1] = min(distance(self.env.sectors.center, sid1, sid2) / (self.env.sectors.radius * 2) for sid2 in warps)
                 arg = ConsumerArgs(ts_sectors, warps, distances, False)
                 self.lock_produced.lock()
-                self.produced.push(arg)
+                self.produced.push_back(arg)
                 size = self.produced.size()
                 self.lock_produced.unlock()
                 if size > 100:
                     with nogil:
                         sleep_for(milliseconds(10000))
         self.lock_produced.lock()
-        self.produced.push(ConsumerArgs([], [], [], True))
+        self.produced.push_back(ConsumerArgs([], [], [], True))
         self.lock_produced.unlock()
 
 
@@ -273,7 +280,7 @@ cdef class Compute:
 
     
     def warps_selection(self, ts_sectors, count):
-        cdef vector[Py_ssize_t] sectors
+        cdef sizes_t sectors
         concat_vectors(self.env.sectors.colonized, ts_sectors, sectors)
         possibilities = combinations(sectors, count)
         groups = groupby(sorted(((c, sum(self.env.sectors.targets_count[s] if self.env.sectors.targets_count[s] else 1 for s in c)) for c in possibilities), key=lambda cw: cw[1], reverse=True), key=lambda cw: cw[1])
@@ -282,7 +289,6 @@ cdef class Compute:
             for cw in g:
                 yield tuple(cw[0])
             return
-        # yield from possibilities
 
     def _run_consumers(self):
         cdef atomic_size_ptr tprogress
@@ -294,7 +300,7 @@ cdef class Compute:
         with cython.nogil, parallel():
             cprogress = new cpair[atomic_size, atomic_size]()
             tprogress = new atomic_size(0)
-            collectq = new cqueue[SolutionDataObject]()
+            collectq = new deque[SolutionDataObject]()
             collectl = new timed_mutex()
             collector = collector_pt(collectq, collectl)
             with gil:
@@ -322,19 +328,18 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
         while it != collectors.end():
             collector = dereference(it)
             collector.second.lock()
-            for _ in range(min(collector.first.size(), 1000)):
+            for _ in range(collector.first.size()):
                 sdo = collector.first.front()
                 if sdo.guard:
                         it = collectors.erase(it)
                         break
-                collector.first.pop()
+                collector.first.pop_front()
                 buffer.push_back(sdo)
             collector.second.unlock()
-            # sleep_for(milliseconds(1000))
             advance(it, 1)
         with gil:
             for sdo in buffer:
-                solutions.put(make_solution(sdo))
+                solutions.put_nowait(make_solution(sdo))
         buffer.clear()
         if collectors.size() == 0:
             return
@@ -342,7 +347,7 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef void consume(Env& env, cqueue[ConsumerArgs]* produced, timed_mutex* lock_produced, collector_pt collector, cpair[atomic_size, atomic_size]& cprogress, atomic_size& tprogress) nogil noexcept:
+cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_produced, collector_pt collector, cpair[atomic_size, atomic_size]& cprogress, atomic_size& tprogress) nogil noexcept:
     cdef Neighbourhood neighbourhood
     cdef ConsumerArgs arg
     cdef double score
@@ -360,16 +365,17 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]* produced, timed_mutex* lock_pr
             lock_produced.lock()
         arg = produced.front()
         if not arg.guard:
-            produced.pop()
+            produced.pop_front()
         lock_produced.unlock()
         if arg.guard:
             collector.second.lock()
             sdo.guard = True
-            collector.first.push(sdo)
+            collector.first.push_back(sdo)
             collector.second.unlock()
             break
         neighbourhood = find_neighbours(env, arg)
         assignments = make_assignments(env, neighbourhood)
+        buffer.reserve(min(assignments.max, 1000000))
         cprogress.second.store(assignments.max)
         cprogress.first.store(0)
         assignments.step = <Py_ssize_t>(max(assignments.max/1000000, 1.0))
@@ -385,22 +391,22 @@ cdef void consume(Env& env, cqueue[ConsumerArgs]* produced, timed_mutex* lock_pr
             cprogress.first.fetch_add(assignments.step)
         collector.second.lock()
         for buffered in buffer:
-            collector.first.push(buffered)
+            collector.first.push_back(buffered)
         buffer.clear()
         collector.second.unlock()
         tprogress.fetch_add(1)
     collector.second.lock()
     for buffered in buffer:
-        collector.first.push(buffered)
+        collector.first.push_back(buffered)
     buffer.clear()
     sdo.guard = True
-    collector.first.push(sdo)
+    collector.first.push_back(sdo)
     collector.second.unlock()
         
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, vector[Py_ssize_t]& assignment, double worst) nogil noexcept:
+cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, sizes_t& assignment, double worst) nogil noexcept:
     cdef double score, score1, score2, score3, score4, score5, r, d, offlane_length
     cdef Py_ssize_t i, j, k, sid1, sid2
     cdef bint warped, valid
@@ -408,9 +414,9 @@ cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[
     cdef cpair[Py_ssize_t, double] size_double_pair
     cdef cpair[Py_ssize_t, bint] size_bint_pair
     cdef vector[double] capacities_left
-    cdef vector[Py_ssize_t] sectors
+    cdef sizes_t sectors
     cdef vector[Arrow] offlane_arrows
-    cdef vector[Py_ssize_t] arrows_order
+    cdef sizes_t arrows_order
 
     capacities_left = env.targets.capacities
     assignment_enumerated = enumerate_sizes(assignment)
@@ -470,8 +476,8 @@ ctypedef cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]] Neighbourhood
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef inline Product make_assignments(Env& env, Neighbourhood& neighbourhood) nogil noexcept:
-    cdef vector[vector[Py_ssize_t]] vs
-    cdef vector[Py_ssize_t] v
+    cdef vector[sizes_t] vs
+    cdef sizes_t v
     cdef cpair[Py_ssize_t, bint] p
 
     vs.reserve(env.targets.storages.size())
@@ -490,11 +496,11 @@ cdef inline Product make_assignments(Env& env, Neighbourhood& neighbourhood) nog
 cdef Neighbourhood find_neighbours(Env& env, ConsumerArgs& arg) nogil noexcept:
     cdef Neighbourhood result
     
-    cdef cmap[Py_ssize_t, vector[Py_ssize_t]] content
-    cdef vector[Py_ssize_t] sectors
+    cdef cmap[Py_ssize_t, sizes_t] content
+    cdef sizes_t sectors
     cdef cset[Py_ssize_t] neighbours
     cdef cpair[Py_ssize_t, bint] size_bint_pair
-    cdef cpair[Py_ssize_t, vector[Py_ssize_t]] size_vector_pair
+    cdef cpair[Py_ssize_t, sizes_t] size_vector_pair
     
     for sector in env.sectors.colonized:
         size_vector_pair.first = sector
@@ -529,7 +535,7 @@ cdef Neighbourhood find_neighbours(Env& env, ConsumerArgs& arg) nogil noexcept:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline vector[Arrow] find_offlane_arrows(Env& env, ConsumerArgs& arg, vector[Py_ssize_t]& assignment, vector[Arrow]& result) nogil noexcept:
+cdef inline vector[Arrow] find_offlane_arrows(Env& env, ConsumerArgs& arg, sizes_t& assignment, vector[Arrow]& result) nogil noexcept:
     cdef Arrow arrow
     cdef vector[cpair[Py_ssize_t, Py_ssize_t]] enumerated
     cdef cpair[Py_ssize_t, Py_ssize_t] pair
@@ -549,7 +555,7 @@ cdef inline vector[Arrow] find_offlane_arrows(Env& env, ConsumerArgs& arg, vecto
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline double compute_offlane_route(Env& env, ConsumerArgs& arg, vector[Arrow]& offlane_arrows, vector[Py_ssize_t]& arrows_order) nogil noexcept:
+cdef inline double compute_offlane_route(Env& env, ConsumerArgs& arg, vector[Arrow]& offlane_arrows, sizes_t& arrows_order) nogil noexcept:
     cdef double dl, wl, length = 0
     cdef Py_ssize_t i, n, prev
 
@@ -573,7 +579,7 @@ cdef inline double compute_offlane_route(Env& env, ConsumerArgs& arg, vector[Arr
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline Py_ssize_t find_id(vector[vector[Py_ssize_t]]& contents, Py_ssize_t n) nogil noexcept:
+cdef inline Py_ssize_t find_id(vector[sizes_t]& contents, Py_ssize_t n) nogil noexcept:
     cdef Py_ssize_t id = 0
     for content in contents:
         if in_vector(content, n):
@@ -582,8 +588,8 @@ cdef inline Py_ssize_t find_id(vector[vector[Py_ssize_t]]& contents, Py_ssize_t 
 
 
 cdef struct Product:
-    vector[vector[Py_ssize_t]] it
-    vector[Py_ssize_t] result
+    vector[sizes_t] it
+    sizes_t result
     Py_ssize_t n
     Py_ssize_t step
     Py_ssize_t curr
@@ -592,7 +598,7 @@ cdef struct Product:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline Product product(vector[vector[Py_ssize_t]]& it, Py_ssize_t step=1) nogil noexcept:
+cdef inline Product product(vector[sizes_t]& it, Py_ssize_t step=1) nogil noexcept:
     cdef Py_ssize_t m = 1
     cdef Product prod
     for v in it:
@@ -610,7 +616,7 @@ cdef inline Product product(vector[vector[Py_ssize_t]]& it, Py_ssize_t step=1) n
 @cython.wraparound(False)
 cdef inline bint next_product(Product& prod) nogil noexcept:
     cdef bint result
-    cdef vector[Py_ssize_t] l
+    cdef sizes_t l
     cdef Py_ssize_t j, i
     
     result = False
@@ -628,7 +634,7 @@ cdef inline bint next_product(Product& prod) nogil noexcept:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline bint in_vector(vector[Py_ssize_t]& v, Py_ssize_t n) nogil noexcept:
+cdef inline bint in_vector(sizes_t& v, Py_ssize_t n) nogil noexcept:
     for k in v:
         if k == n:
             return True
@@ -637,7 +643,7 @@ cdef inline bint in_vector(vector[Py_ssize_t]& v, Py_ssize_t n) nogil noexcept:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline void concat_vectors(vector[Py_ssize_t]& a, vector[Py_ssize_t]& b, vector[Py_ssize_t]& c) nogil noexcept:
+cdef inline void concat_vectors(sizes_t& a, sizes_t& b, sizes_t& c) nogil noexcept:
     c.clear()
     c.reserve(a.size() + b.size())
     for i in a:
@@ -648,7 +654,7 @@ cdef inline void concat_vectors(vector[Py_ssize_t]& a, vector[Py_ssize_t]& b, ve
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline vector[cpair[Py_ssize_t, Py_ssize_t]] enumerate_sizes(vector[Py_ssize_t]& v) nogil noexcept:
+cdef inline vector[cpair[Py_ssize_t, Py_ssize_t]] enumerate_sizes(sizes_t& v) nogil noexcept:
     cdef vector[cpair[Py_ssize_t, Py_ssize_t]] result
     cdef cpair[Py_ssize_t, Py_ssize_t] pair
     cdef Py_ssize_t i = 0
@@ -679,8 +685,8 @@ cdef inline vector[cpair[Py_ssize_t, double]] enumerate_doubles(vector[double]& 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef inline vector[Py_ssize_t] crange(Py_ssize_t n) nogil noexcept:
-    cdef vector[Py_ssize_t] result
+cdef inline sizes_t crange(Py_ssize_t n) nogil noexcept:
+    cdef sizes_t result
     cdef Py_ssize_t i = 0
     result.reserve(n)
     while i < n:
