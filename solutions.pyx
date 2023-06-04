@@ -426,7 +426,7 @@ cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_pro
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, sizes_t& assignment, double worst) nogil noexcept:
+cdef inline double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector[cpair[Py_ssize_t, bint]]]& neighbourhood, sizes_t& assignment, double worst) nogil noexcept:
     cdef double score, score1, score2, score3, score4, score5, r, d, offlane_length
     cdef Py_ssize_t i, j, k, sid1, sid2
     cdef bint warped, valid
@@ -513,7 +513,7 @@ cdef inline Product make_assignments(Env& env, Neighbourhood& neighbourhood) nog
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef Neighbourhood find_neighbours(Env& env, ConsumerArgs& arg) nogil noexcept:
+cdef inline Neighbourhood find_neighbours(Env& env, ConsumerArgs& arg) nogil noexcept:
     cdef Neighbourhood result
     
     cdef cmap[Py_ssize_t, sizes_t] content

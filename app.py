@@ -295,7 +295,7 @@ class App:
             self.uimanager.update()
             self.uimanager.render(screen)
             pygame.display.flip()
-            clock.tick(50)
+            clock.tick(100)
         pygame.display.quit()
 
     def create_sector(self, left, top, radius, location):
