@@ -420,6 +420,7 @@ cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_pro
     cdef vector[double] top_scores
     cdef SolutionDataObject sdo
     cdef vector[SolutionDataObject] buffer
+    cdef Py_ssize_t cprogress_value
 
     top_scores.push_back(0.0)
 
@@ -438,8 +439,9 @@ cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_pro
         neighbourhood = find_neighbours(env, arg)
         assignments = make_assignments(env, neighbourhood)
         buffer.reserve(min(assignments.max, 1000000))
+        cprogress_value = 0
         cprogress.second.store(assignments.max)
-        cprogress.first.store(0)
+        cprogress.first.store(cprogress_value)
         assignments.step = <Py_ssize_t>(max(assignments.max/100000, 1.0))
         while next_product(assignments):
             score = evaluate(env, arg, neighbourhood, assignments.result, (top_scores.back() if top_scores.size() == 10 else -1))
@@ -450,7 +452,8 @@ cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_pro
                 sdo.assignment = assignments.result
                 sdo.guard = False
                 buffer.push_back(sdo)
-            cprogress.first.fetch_add(assignments.step)
+            cprogress_value += assignments.step
+            cprogress.first.store(cprogress_value)
         collector.second.lock()
         for buffered in buffer:
             collector.first.push_back(buffered)
