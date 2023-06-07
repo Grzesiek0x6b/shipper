@@ -613,6 +613,7 @@ class App:
         self.solution_number = 0
 
         def make_solution_button(solution, number):
+            # print("make button")
             if not hasattr(solution, "button"):
                 solution.button = ui.ToogleButton(
                     text=f"#{number}",
@@ -627,23 +628,16 @@ class App:
             if self.computing is None:
                 return
             try:
-                for _ in range(10):
-                    solution = self.computing.solutions.get_nowait()
+                for solution in self.computing.take_solutions(10):
                     self.solution_number += 1
-                    # button = ui.ToogleButton(
-                    #     text=f"#{self.solution_number}",
-                    #     width=200, height=30, display_checkmark=False,
-                    #     foreground=(0,0,0), background=(198,188,83), active_background=(230,210,0))
-                    # button.highlight_tick = 30
-                    # button.changed = partial(toogle_button, btn=button, solution=solution)
                     insort_left(sorted_buttons, (solution.score, random(), self.solution_number, solution))
                 if len(sorted_buttons) > 10:
                     del sorted_buttons[:-10]
-                    scores_panel.replace(reversed([make_solution_button(sb[3], sb[2]) for sb in sorted_buttons]))
+                scores_panel.replace(reversed([make_solution_button(sb[3], sb[2]) for sb in sorted_buttons]))
             except Empty:
                 if len(sorted_buttons) > 10:
                     del sorted_buttons[:-10]
-                    scores_panel.replace(reversed([make_solution_button(sb[3], sb[2]) for sb in sorted_buttons]))
+                scores_panel.replace(reversed([make_solution_button(sb[3], sb[2]) for sb in sorted_buttons]))
                 if self.computing.task and not self.computing.task.is_alive():
                     menu_btn.update = orig_menu_btn_update
                     menu_btn.is_toogled = True

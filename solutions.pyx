@@ -8,6 +8,7 @@ from libcpp.pair cimport pair as cpair
 from libcpp.deque cimport deque
 from libcpp.set cimport set as cset
 from libcpp.vector cimport vector
+from libc.stdio cimport printf
 
 from collections import defaultdict
 import cython
@@ -16,7 +17,7 @@ from cython.parallel import parallel
 from itertools import combinations, groupby
 import math
 from multiprocessing import Queue
-from queue import Full
+from queue import Full, Empty
 from threading import Thread
 
 cdef extern from "<algorithm>" namespace "std" nogil:
@@ -44,8 +45,10 @@ cdef extern from "<mutex>" namespace "std" nogil:
     cdef cppclass timed_mutex:
         timed_mutex() nogil noexcept
         void lock() nogil noexcept
+        bint try_lock() nogil noexcept
         bint try_lock_for(milliseconds&) nogil noexcept
         void unlock() nogil noexcept
+
 
 cdef extern from "<iterator>" namespace "std" nogil:
     ctypedef input_iterator
@@ -149,6 +152,48 @@ cdef struct SolutionDataObject:
     bint guard
 
 
+cdef struct sdo_sync_queue:
+    timed_mutex* m
+    deque[SolutionDataObject] q
+    bint c
+
+    # def __cinit__(self):
+    #     self.c = False
+    #     # printf("sdo_sync_queue.__cinit__")
+
+cdef inline void sdosq_mark_exhaused(sdo_sync_queue& sdosq) nogil noexcept:
+    sdosq.m.lock()
+    sdosq.c = True
+    sdosq.m.unlock()
+    
+cdef inline void sdosq_push(sdo_sync_queue& sdosq, SolutionDataObject& sdo) nogil noexcept:
+    while not sdosq.m.try_lock_for(milliseconds(100)):
+        sleep_for(milliseconds(1000))
+    sdosq.q.push_back(sdo)
+    sdosq.m.unlock()
+    
+cdef inline void sdosq_push_many(sdo_sync_queue& sdosq, vector[SolutionDataObject]& sdos) nogil noexcept:
+    while not sdosq.m.try_lock_for(milliseconds(100)):
+        sleep_for(milliseconds(1000))
+    for sdo in sdos:
+        sdosq.q.push_back(sdo)
+    sdosq.m.unlock()
+    
+cdef bint sdosq_take(sdo_sync_queue& sdosq, n, vector[SolutionDataObject]& result):
+    result.clear()
+    result.reserve(n)
+    if sdosq.m.try_lock_for(milliseconds(100)):
+        if sdosq.q.empty() and sdosq.c:
+            sdosq.m.unlock()
+            return False
+        i = 0
+        while i < n and not sdosq.q.empty():
+            result.push_back(sdosq.q.front())
+            sdosq.q.pop_front()
+            i += 1
+        sdosq.m.unlock()
+    return True
+
 class Solution:
     score: float
     ts_sectors: list
@@ -183,9 +228,9 @@ ctypedef cpair[collector_qt, collector_lt] collector_pt
 cdef class Compute:
     cdef public int threads_count
     cdef public object task
-    cdef public object solutions
     cdef public list sectors
     cdef public list targets
+    cdef sdo_sync_queue solutions
     cdef deque[ConsumerArgs] produced
     cdef timed_mutex lock_produced
     cdef Env env
@@ -195,9 +240,8 @@ cdef class Compute:
     cdef clist[collector_pt] collectors
 
     def __cinit__(self, app):
-        self.solutions = Queue(100)
         self.total_produced = 0
-
+        self.solutions.m = new timed_mutex()
         self.make_env(app)
 
         Thread(target=self._produce, daemon=True).start()
@@ -241,6 +285,15 @@ cdef class Compute:
         self.env.targets.storages = [obj.storage for obj in self.targets]
         self.env.targets.likely_assign = [obj.likely_assign for obj in self.targets]
 
+    def take_solutions(self, n=10):
+        cdef vector[SolutionDataObject] buffer
+        if sdosq_take(self.solutions, n, buffer):
+            for sdo in buffer:
+                yield make_solution(sdo)
+        else:
+            raise Empty
+
+
     def _produce(self):
         warps_count = min(len(self.env.sectors.colonized)+len(self.env.targets.stations)-1, self.env.warps_count) + 1 if self.env.warps_count else 0
         self.total_produced = 1
@@ -250,6 +303,8 @@ cdef class Compute:
             if self.env.sectors.targets_count[s] > 1:
                 n += 1
         self.total_produced *= math.comb(self.env.sectors.colonized.size() - min(n, warps_count) + self.env.targets.stations.size(), warps_count)
+        
+        buffer = []
         for ts_sectors in self.ts_selection():
             for warps in self.warps_selection(ts_sectors, warps_count):
                 sectors = list(self.env.sectors.colonized) + list(ts_sectors)
@@ -258,14 +313,16 @@ cdef class Compute:
                     for sid1 in sectors:
                         if sid1 not in warps:
                             distances[sid1] = min(distance(self.env.sectors.center, sid1, sid2) / (self.env.sectors.radius * 2) for sid2 in warps)
-                arg = ConsumerArgs(ts_sectors, warps, distances, False)
-                self.lock_produced.lock()
-                self.produced.push_back(arg)
-                size = self.produced.size()
-                self.lock_produced.unlock()
-                if size > 100:
-                    with nogil:
-                        sleep_for(milliseconds(10000))
+                buffer.append(ConsumerArgs(ts_sectors, warps, distances, False))
+            self.lock_produced.lock()
+            for buffered in buffer:
+                self.produced.push_back(buffered)
+            size = self.produced.size()
+            self.lock_produced.unlock()
+            buffer.clear()
+            if size > 10000:
+                with nogil:
+                    sleep_for(milliseconds(10000))
         self.lock_produced.lock()
         self.produced.push_back(ConsumerArgs([], [], [], True))
         self.lock_produced.unlock()
@@ -304,7 +361,6 @@ cdef class Compute:
             collectl = new timed_mutex()
             collector = collector_pt(collectq, collectl)
             with gil:
-                self.threads_count += 1
                 self.consumer_progresses.push_back(cprogress)
                 self.total_consumed.push_back(tprogress)
                 self.collectors.push_back(collector)
@@ -313,11 +369,12 @@ cdef class Compute:
     def _collect(self):
         while self.threads_count == 0:
             pass
-        collect(self.collectors, self.solutions)
+        with nogil:
+            collect(self.collectors, self.solutions)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexcept:
+cdef void collect(clist[collector_pt]& collectors, sdo_sync_queue& solutions) nogil noexcept:
     cdef collector_pt collector
     cdef vector[SolutionDataObject] buffer
     cdef vector[double] top_scores
@@ -333,38 +390,22 @@ cdef void collect(clist[collector_pt]& collectors, object solutions) nogil noexc
             for _ in range(min(collector.first.size(), 1000)):
                 sdo = collector.first.front()
                 if sdo.guard:
-                        it = collectors.erase(it)
-                        break
+                    it = collectors.erase(it)
+                    break
                 collector.first.pop_front()
                 if insort_double(top_scores, sdo.score):
                     buffer.push_back(sdo)
             collector.second.unlock()
             advance(it, 1)
-        while True:
-            if buffer.empty():
-                break
-            with gil:
-                try:
-                    sdo = buffer.back()
-                    solutions.put_nowait(make_solution(sdo))
-                    buffer.pop_back()
-                except Full:
-                    with nogil:
-                        sleep_for(milliseconds(10000))
-                    break
+        if not buffer.empty():
+            sdosq_push_many(solutions, buffer)
+            buffer.clear()
         if collectors.size() == 0:
             break
-    while True:
-        if buffer.empty():
-            break
-        with gil:
-            try:
-                sdo = buffer.back()
-                solutions.put_nowait(make_solution(sdo))
-                buffer.pop_back()
-            except Full:
-                with nogil:
-                    sleep_for(milliseconds(10000))
+    if not buffer.empty():
+        sdosq_push_many(solutions, buffer)
+        buffer.clear()
+    sdosq_mark_exhaused(solutions)
 
 
 @cython.boundscheck(False)
@@ -390,17 +431,13 @@ cdef void consume(Env& env, deque[ConsumerArgs]* produced, timed_mutex* lock_pro
             produced.pop_front()
         lock_produced.unlock()
         if arg.guard:
-            collector.second.lock()
-            sdo.guard = True
-            collector.first.push_back(sdo)
-            collector.second.unlock()
             break
         neighbourhood = find_neighbours(env, arg)
         assignments = make_assignments(env, neighbourhood)
         buffer.reserve(min(assignments.max, 1000000))
         cprogress.second.store(assignments.max)
         cprogress.first.store(0)
-        assignments.step = <Py_ssize_t>(max(assignments.max/1000000, 1.0))
+        assignments.step = <Py_ssize_t>(max(assignments.max/100000, 1.0))
         while next_product(assignments):
             score = evaluate(env, arg, neighbourhood, assignments.result, (top_scores.back() if top_scores.size() == 10 else -1))
             if insort_double(top_scores, score):
