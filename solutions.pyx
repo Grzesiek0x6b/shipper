@@ -402,6 +402,9 @@ cdef void collect(clist[collector_pt]& collectors, sdo_sync_queue& solutions) no
             buffer.clear()
         if collectors.size() == 0:
             break
+        if solutions.m.try_lock_for(milliseconds(10000)):
+            if solutions.q.size() > 100:
+                sleep_for(milliseconds(1000))
     if not buffer.empty():
         sdosq_push_many(solutions, buffer)
         buffer.clear()
