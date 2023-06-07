@@ -613,7 +613,6 @@ class App:
         self.solution_number = 0
 
         def make_solution_button(solution, number):
-            # print("make button")
             if not hasattr(solution, "button"):
                 solution.button = ui.ToogleButton(
                     text=f"#{number}",

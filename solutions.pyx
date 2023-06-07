@@ -161,25 +161,34 @@ cdef struct sdo_sync_queue:
     #     self.c = False
     #     # printf("sdo_sync_queue.__cinit__")
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
 cdef inline void sdosq_mark_exhaused(sdo_sync_queue& sdosq) nogil noexcept:
     sdosq.m.lock()
     sdosq.c = True
     sdosq.m.unlock()
     
+@cython.boundscheck(False)
+@cython.wraparound(False)
 cdef inline void sdosq_push(sdo_sync_queue& sdosq, SolutionDataObject& sdo) nogil noexcept:
     while not sdosq.m.try_lock_for(milliseconds(100)):
         sleep_for(milliseconds(1000))
     sdosq.q.push_back(sdo)
     sdosq.m.unlock()
-    
+  
+@cython.boundscheck(False)
+@cython.wraparound(False)  
 cdef inline void sdosq_push_many(sdo_sync_queue& sdosq, vector[SolutionDataObject]& sdos) nogil noexcept:
     while not sdosq.m.try_lock_for(milliseconds(100)):
         sleep_for(milliseconds(1000))
     for sdo in sdos:
         sdosq.q.push_back(sdo)
     sdosq.m.unlock()
-    
-cdef bint sdosq_take(sdo_sync_queue& sdosq, n, vector[SolutionDataObject]& result):
+  
+@cython.boundscheck(False)
+@cython.wraparound(False)  
+cdef inline bint sdosq_take(sdo_sync_queue& sdosq, Py_ssize_t n, vector[SolutionDataObject]& result) nogil noexcept:
+    cdef Py_ssize_t i
     result.clear()
     result.reserve(n)
     if sdosq.m.try_lock_for(milliseconds(100)):
