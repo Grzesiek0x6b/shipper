@@ -152,56 +152,58 @@ cdef struct SolutionDataObject:
     bint guard
 
 
-cdef struct sdo_sync_queue:
-    timed_mutex* m
-    deque[SolutionDataObject] q
-    bint c
+cdef class SDOSyncQueue:
+    cdef timed_mutex* m
+    cdef deque[SolutionDataObject]* q
+    cdef bint c
 
-    # def __cinit__(self):
-    #     self.c = False
-    #     # printf("sdo_sync_queue.__cinit__")
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef inline void sdosq_mark_exhaused(sdo_sync_queue& sdosq) nogil noexcept:
-    sdosq.m.lock()
-    sdosq.c = True
-    sdosq.m.unlock()
+    def __cinit__(self):
+        self.m = new timed_mutex()
+        self.q = new deque[SolutionDataObject]()
+        self.c = False
     
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef inline void sdosq_push(sdo_sync_queue& sdosq, SolutionDataObject& sdo) nogil noexcept:
-    while not sdosq.m.try_lock_for(milliseconds(100)):
-        sleep_for(milliseconds(1000))
-    sdosq.q.push_back(sdo)
-    sdosq.m.unlock()
-  
-@cython.boundscheck(False)
-@cython.wraparound(False)  
-cdef inline void sdosq_push_many(sdo_sync_queue& sdosq, vector[SolutionDataObject]& sdos) nogil noexcept:
-    while not sdosq.m.try_lock_for(milliseconds(100)):
-        sleep_for(milliseconds(1000))
-    for sdo in sdos:
-        sdosq.q.push_back(sdo)
-    sdosq.m.unlock()
-  
-@cython.boundscheck(False)
-@cython.wraparound(False)  
-cdef inline bint sdosq_take(sdo_sync_queue& sdosq, Py_ssize_t n, vector[SolutionDataObject]& result) nogil noexcept:
-    cdef Py_ssize_t i
-    result.clear()
-    result.reserve(n)
-    if sdosq.m.try_lock_for(milliseconds(100)):
-        if sdosq.q.empty() and sdosq.c:
-            sdosq.m.unlock()
-            return False
-        i = 0
-        while i < n and not sdosq.q.empty():
-            result.push_back(sdosq.q.front())
-            sdosq.q.pop_front()
-            i += 1
-        sdosq.m.unlock()
-    return True
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cdef inline void mark_exhaused(self) nogil noexcept:
+        self.m.lock()
+        self.c = True
+        self.m.unlock()
+    
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cdef inline void push(self, SolutionDataObject& sdo) nogil noexcept:
+        while not self.m.try_lock_for(milliseconds(100)):
+            sleep_for(milliseconds(1000))
+        self.q.push_back(sdo)
+        self.m.unlock()
+    
+    @cython.boundscheck(False)
+    @cython.wraparound(False)  
+    cdef inline void push_many(self, vector[SolutionDataObject]& sdos) nogil noexcept:
+        while not self.m.try_lock_for(milliseconds(100)):
+            sleep_for(milliseconds(1000))
+        for sdo in sdos:
+            self.q.push_back(sdo)
+        self.m.unlock()
+    
+    @cython.boundscheck(False)
+    @cython.wraparound(False)  
+    cdef inline bint take(self, Py_ssize_t n, vector[SolutionDataObject]& result) nogil noexcept:
+        cdef Py_ssize_t i
+        result.clear()
+        result.reserve(n)
+        if self.m.try_lock_for(milliseconds(100)):
+            if self.q.empty() and self.c:
+                self.m.unlock()
+                return False
+            i = 0
+            while i < n and not self.q.empty():
+                result.push_back(self.q.front())
+                self.q.pop_front()
+                i += 1
+            self.m.unlock()
+        return True
+
 
 class Solution:
     score: float
@@ -239,7 +241,7 @@ cdef class Compute:
     cdef public object task
     cdef public list sectors
     cdef public list targets
-    cdef sdo_sync_queue solutions
+    cdef SDOSyncQueue solutions
     cdef deque[ConsumerArgs] produced
     cdef timed_mutex lock_produced
     cdef Env env
@@ -250,7 +252,7 @@ cdef class Compute:
 
     def __cinit__(self, app):
         self.total_produced = 0
-        self.solutions.m = new timed_mutex()
+        self.solutions = SDOSyncQueue()
         self.make_env(app)
 
         Thread(target=self._produce, daemon=True).start()
@@ -296,7 +298,7 @@ cdef class Compute:
 
     def take_solutions(self, n=10):
         cdef vector[SolutionDataObject] buffer
-        if sdosq_take(self.solutions, n, buffer):
+        if self.solutions.take(n, buffer):
             for sdo in buffer:
                 yield make_solution(sdo)
         else:
@@ -370,6 +372,7 @@ cdef class Compute:
             collectl = new timed_mutex()
             collector = collector_pt(collectq, collectl)
             with gil:
+                self.threads_count += 1
                 self.consumer_progresses.push_back(cprogress)
                 self.total_consumed.push_back(tprogress)
                 self.collectors.push_back(collector)
@@ -383,7 +386,7 @@ cdef class Compute:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef void collect(clist[collector_pt]& collectors, sdo_sync_queue& solutions) nogil noexcept:
+cdef void collect(clist[collector_pt]& collectors, SDOSyncQueue solutions) nogil noexcept:
     cdef collector_pt collector
     cdef vector[SolutionDataObject] buffer
     cdef vector[double] top_scores
@@ -407,17 +410,20 @@ cdef void collect(clist[collector_pt]& collectors, sdo_sync_queue& solutions) no
             collector.second.unlock()
             advance(it, 1)
         if not buffer.empty():
-            sdosq_push_many(solutions, buffer)
+            solutions.push_many(buffer)
             buffer.clear()
         if collectors.size() == 0:
             break
         if solutions.m.try_lock_for(milliseconds(10000)):
             if solutions.q.size() > 100:
+                solutions.m.unlock()
                 sleep_for(milliseconds(1000))
+            else:
+                solutions.m.unlock()
     if not buffer.empty():
-        sdosq_push_many(solutions, buffer)
+        solutions.push_many(buffer)
         buffer.clear()
-    sdosq_mark_exhaused(solutions)
+    solutions.mark_exhaused()
 
 
 @cython.boundscheck(False)
