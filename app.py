@@ -34,7 +34,6 @@ class SpaceObject(ABC):
     capacity: int
     targets: int
     storage: bool = False
-    likely_assign: float = 1
 
     @property
     @abstractmethod
@@ -72,7 +71,6 @@ class Planet(SpaceObject):
         self.packages = packages
         self.capacity = capacity
         self.targets = targets
-        self.likely_assign = (capacity/targets/100)**targets if targets > 1 else 1
         self.colonized = True
 
     @property
@@ -105,7 +103,6 @@ class TradeStation(SpaceObject):
         self.packages = 12
         self.capacity = 36
         self.targets = 1
-        self.likely_assign = 0.5
     
     @property
     def color(self):

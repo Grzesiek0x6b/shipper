@@ -126,7 +126,6 @@ cdef struct EnvTargets:
     vector[double] capacities
     vector[int] targets
     vector[bint] storages
-    vector[double] likely_assign
 
 cdef struct Env:
     Py_ssize_t warps_count
@@ -294,7 +293,6 @@ cdef class Compute:
         self.env.targets.capacities = [obj.capacity/per_target for obj in self.targets]
         self.env.targets.targets = [obj.targets for obj in self.targets]
         self.env.targets.storages = [obj.storage for obj in self.targets]
-        self.env.targets.likely_assign = [obj.likely_assign for obj in self.targets]
 
     def take_solutions(self, n=10):
         cdef vector[SolutionDataObject] buffer
@@ -503,7 +501,7 @@ cdef inline double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector
     for size_size_pair in assignment_enumerated:
         capacities_left[size_size_pair.second] -= env.targets.targets[size_size_pair.first]
     for r in capacities_left:
-        if r < 0.3:
+        if r < 0.5:
             return 0
     score1 = 1
     capacities_left_enumerated = enumerate_doubles(capacities_left)
@@ -525,9 +523,12 @@ cdef inline double evaluate(Env& env, ConsumerArgs& arg, cmap[Py_ssize_t, vector
             if size_bint_pair.first == size_size_pair.second:
                 d = max(1.0, distance(env.sectors.center, sid1, sid2)/(env.sectors.radius*2)) if sid1 != sid2 else 1.0
                 score2 *= d if warped else 0.1 ** d
-        score3 *= env.targets.likely_assign[size_size_pair.second]
+        score3 *= 1/(arg.offlane_distances[sid2] + 1) ** 2
         score4 *= 1 if in_vector(arg.warps, sid1) and in_vector(arg.warps, sid2) else 0.5
     score = score1 * score2 * score3 * score4
+    if score < worst:
+        return 0
+    score *= 1/distinct_count(assignment)
     if score < worst:
         return 0
     concat_vectors(env.sectors.colonized, arg.ts_sectors, sectors)
@@ -773,3 +774,10 @@ cdef inline sizes_t crange(Py_ssize_t n) nogil noexcept:
         result.push_back(i)
         i += 1
     return result
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline Py_ssize_t distinct_count(sizes_t& v) nogil noexcept:
+    cdef cset[Py_ssize_t] s
+    s.insert(v.begin(), v.end())
+    return s.size()
